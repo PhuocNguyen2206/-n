@@ -87,6 +87,23 @@ def create_person(payload: PersonCreate) -> dict:
     return {"id": person_id, **payload.model_dump()}
 
 
+@app.get("/api/v1/people")
+def list_people() -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT p.id, p.full_name, p.campus_id, p.role,
+                   CASE WHEN p.face_embedding IS NULL THEN 0 ELSE 1 END AS face_registered,
+                   GROUP_CONCAT(v.plate_number, ', ') AS plates
+            FROM people p
+            LEFT JOIN vehicles v ON v.owner_id = p.id AND v.active = 1
+            GROUP BY p.id
+            ORDER BY p.full_name
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 @app.post("/api/v1/people/{person_id}/face-enrollment")
 async def enroll_face(person_id: str, image: UploadFile = File(...)) -> dict:
     if not image.content_type or not image.content_type.startswith("image/"):
