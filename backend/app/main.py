@@ -105,20 +105,28 @@ async def enroll_face(person_id: str, image: UploadFile = File(...)) -> dict:
 
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
 async def verify_gate_image(
-    image: UploadFile = File(...), direction: str = Form("exit")
+    images: list[UploadFile] = File(...), direction: str = Form("exit")
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
-    if not image.content_type or not image.content_type.startswith("image/"):
-        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
-    image_data = await image.read()
-    try:
-        analysis = get_vision_service().analyze_image(image_data)
-        face = get_face_service().extract(image_data)
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
-
-    plate = analysis.plate_text
+    plate, plate_confidence, face = None, 0.0, None
+    for image in images:
+        if not image.content_type or not image.content_type.startswith("image/"):
+            raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+        image_data = await image.read()
+        try:
+            analysis = get_vision_service().analyze_image(image_data)
+            if not plate and analysis.plate_text:
+                plate, plate_confidence = analysis.plate_text, analysis.plate_confidence or 0.0
+        except ValueError:
+            continue
+        if face is None:
+            try:
+                face = get_face_service().extract(image_data)
+            except ValueError:
+                pass
+    if face is None:
+        raise HTTPException(422, "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn")
     event_id = str(uuid4())
     decision, reason, person_id, person_name, score = "denied", "Không đọc được biển số xe", None, None, 0.0
     with get_connection() as connection:
@@ -145,7 +153,7 @@ async def verify_gate_image(
             reason = "Không tìm thấy phương tiện đã đăng ký"
         connection.execute(
             "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, person_id, decision, reason, analysis.plate_confidence or 0, score),
+            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, person_id, decision, reason, plate_confidence, score),
         )
     return RecognitionResult(event_id=event_id, decision=decision, reason=reason, person_name=person_name, plate_number=plate)
 
