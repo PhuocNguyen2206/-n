@@ -39,3 +39,6 @@ class RecognitionResult(BaseModel):
     reason: str
     person_name: str | None = None
     plate_number: str | None = None
+    face_detected: bool = False
+    face_detection_confidence: float | None = None
+    face_similarity: float | None = None

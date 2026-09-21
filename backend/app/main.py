@@ -155,7 +155,11 @@ async def verify_gate_image(
             "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, person_id, decision, reason, plate_confidence, score),
         )
-    return RecognitionResult(event_id=event_id, decision=decision, reason=reason, person_name=person_name, plate_number=plate)
+    return RecognitionResult(
+        event_id=event_id, decision=decision, reason=reason, person_name=person_name,
+        plate_number=plate, face_detected=True, face_detection_confidence=face.confidence,
+        face_similarity=score if plate else None,
+    )
 
 
 @app.post("/api/v1/vehicles", status_code=201)
