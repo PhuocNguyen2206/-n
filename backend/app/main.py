@@ -142,13 +142,13 @@ async def verify_gate_image(
                 face = get_face_service().extract(image_data)
             except ValueError:
                 pass
-    if face is None:
-        raise HTTPException(422, "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn")
     event_id = str(uuid4())
     decision, reason, person_id, person_name, score = "denied", "Không đọc được biển số xe", None, None, 0.0
     with get_connection() as connection:
         vehicle = connection.execute("SELECT * FROM vehicles WHERE plate_number = ? AND active = 1", (plate,)).fetchone() if plate else None
-        if vehicle:
+        if face is None:
+            reason = "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn"
+        elif vehicle:
             candidates = connection.execute(
                 "SELECT p.* FROM people p WHERE p.id = ? UNION SELECT p.* FROM people p JOIN vehicle_authorizations a ON a.borrower_id = p.id WHERE a.vehicle_id = ? AND a.valid_from <= ? AND a.valid_until >= ?",
                 (vehicle["owner_id"], vehicle["id"], datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
@@ -174,7 +174,8 @@ async def verify_gate_image(
         )
     return RecognitionResult(
         event_id=event_id, decision=decision, reason=reason, person_name=person_name,
-        plate_number=plate, face_detected=True, face_detection_confidence=face.confidence,
+        plate_number=plate, face_detected=face is not None,
+        face_detection_confidence=face.confidence if face else None,
         face_similarity=score if plate else None,
     )
 
@@ -197,6 +198,15 @@ def create_vehicle(payload: VehicleCreate) -> dict:
     return {"id": vehicle_id, "plate_number": plate, **payload.model_dump(exclude={"plate_number"})}
 
 
+@app.get("/api/v1/vehicles")
+def list_vehicles() -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT v.*, p.full_name AS owner_name, p.campus_id AS owner_campus_id FROM vehicles v JOIN people p ON p.id = v.owner_id ORDER BY v.plate_number"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 @app.post("/api/v1/authorizations", status_code=201)
 def create_authorization(payload: AuthorizationCreate) -> dict:
     if payload.valid_until <= payload.valid_from:
@@ -208,6 +218,37 @@ def create_authorization(payload: AuthorizationCreate) -> dict:
             (authorization_id, payload.vehicle_id, payload.borrower_id, payload.valid_from.isoformat(), payload.valid_until.isoformat(), payload.note),
         )
     return {"id": authorization_id, **payload.model_dump()}
+
+
+@app.get("/api/v1/authorizations")
+def list_authorizations() -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT a.*, v.plate_number, p.full_name AS borrower_name
+            FROM vehicle_authorizations a
+            JOIN vehicles v ON v.id = a.vehicle_id
+            JOIN people p ON p.id = a.borrower_id
+            ORDER BY a.valid_until DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.get("/api/v1/dashboard/summary")
+def dashboard_summary() -> dict:
+    with get_connection() as connection:
+        totals = connection.execute(
+            "SELECT COUNT(*) AS total, SUM(decision = 'approved') AS approved, SUM(decision = 'denied') AS denied FROM access_events"
+        ).fetchone()
+        registered = connection.execute("SELECT COUNT(*) AS people, (SELECT COUNT(*) FROM vehicles WHERE active = 1) AS vehicles FROM people").fetchone()
+        return {
+            "events": totals["total"] or 0,
+            "approved": totals["approved"] or 0,
+            "denied": totals["denied"] or 0,
+            "people": registered["people"] or 0,
+            "vehicles": registered["vehicles"] or 0,
+        }
 
 
 @app.post("/api/v1/recognition/process", response_model=RecognitionResult)
