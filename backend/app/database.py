@@ -46,6 +46,9 @@ def initialize_database() -> None:
             );
             """
         )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(people)")}
+        if "face_embedding" not in columns:
+            connection.execute("ALTER TABLE people ADD COLUMN face_embedding TEXT")
 
 
 @contextmanager

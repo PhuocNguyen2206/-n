@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -8,38 +8,52 @@ const API = "http://127.0.0.1:8000/api/v1";
 function App() {
   const [events, setEvents] = useState<Event[]>([]);
   const [status, setStatus] = useState("Đang kết nối API...");
+  const [gateImage, setGateImage] = useState<File | null>(null);
+  const [gateResult, setGateResult] = useState("");
+  const [name, setName] = useState("");
+  const [campusId, setCampusId] = useState("");
   const [plate, setPlate] = useState("");
-  const [face, setFace] = useState("");
-  const [image, setImage] = useState<File | null>(null);
-  const [visionResult, setVisionResult] = useState("");
+  const [portrait, setPortrait] = useState<File | null>(null);
+  const [registerResult, setRegisterResult] = useState("");
   const load = async () => {
     try { const response = await fetch(`${API}/events`); setEvents(await response.json()); setStatus("Hệ thống sẵn sàng"); }
     catch { setStatus("Chưa kết nối API"); }
   };
   useEffect(() => { load(); }, []);
-  const check = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const response = await fetch(`${API}/recognition/process`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plate_number: plate, face_token: face, plate_confidence: 0.95, face_confidence: 0.95 }) });
-    const result = await response.json(); alert(`${result.decision}: ${result.reason}`); load();
-  };
-  const analyzeImage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!image) return;
-    const formData = new FormData(); formData.append("image", image);
+
+  const verifyGate = async (event: FormEvent) => {
+    event.preventDefault(); if (!gateImage) return;
+    setGateResult("Đang quét biển số và khuôn mặt...");
+    const form = new FormData(); form.append("image", gateImage); form.append("direction", "exit");
     try {
-      const response = await fetch(`${API}/vision/analyze`, { method: "POST", body: formData });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.detail || "Không thể phân tích ảnh");
-      const found = result.detections.map((item: { label: string; confidence: number }) => `${item.label} (${item.confidence})`).join(", ");
-      const plateText = result.plate_text ? ` Biển số đọc được: ${result.plate_text} (${result.plate_confidence}).` : " Chưa đọc được biển số; hãy dùng ảnh rõ, chụp gần biển số.";
-      setVisionResult(`${result.model}: ${found || "chưa phát hiện đối tượng"}.${plateText}`);
-    } catch (error) { setVisionResult(error instanceof Error ? error.message : "Không thể phân tích ảnh"); }
+      const response = await fetch(`${API}/gate/verify`, { method: "POST", body: form }); const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Không thể kiểm tra ảnh");
+      setGateResult(`${result.decision === "approved" ? "✓ ĐƯỢC PHÉP" : "✕ KHÔNG CHO PHÉP"}: ${result.reason}${result.plate_number ? ` | Biển số: ${result.plate_number}` : ""}`); load();
+    } catch (error) { setGateResult(error instanceof Error ? error.message : "Không thể kiểm tra ảnh"); }
   };
+
+  const registerOwner = async (event: FormEvent) => {
+    event.preventDefault(); if (!portrait) return;
+    setRegisterResult("Đang đăng ký khuôn mặt và phương tiện...");
+    try {
+      const personResponse = await fetch(`${API}/people`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ full_name: name, campus_id: campusId, role: "student" }) });
+      const person = await personResponse.json(); if (!personResponse.ok) throw new Error(person.detail || "Không thể tạo chủ xe");
+      const faceForm = new FormData(); faceForm.append("image", portrait);
+      const faceResponse = await fetch(`${API}/people/${person.id}/face-enrollment`, { method: "POST", body: faceForm }); const face = await faceResponse.json();
+      if (!faceResponse.ok) throw new Error(face.detail || "Không thể đăng ký khuôn mặt");
+      const vehicleResponse = await fetch(`${API}/vehicles`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plate_number: plate, owner_id: person.id, vehicle_type: "motorbike" }) });
+      const vehicle = await vehicleResponse.json(); if (!vehicleResponse.ok) throw new Error(vehicle.detail || "Không thể đăng ký xe");
+      setRegisterResult(`✓ Đã đăng ký ${name}, biển số ${vehicle.plate_number}. Khuôn mặt đã lưu (${face.face_confidence}).`); setName(""); setCampusId(""); setPlate(""); setPortrait(null);
+    } catch (error) { setRegisterResult(error instanceof Error ? error.message : "Không thể đăng ký"); }
+  };
+
   return <main>
     <header><div><p className="eyebrow">CỔNG KIỂM SOÁT THÔNG MINH</p><h1>Nhận diện AI</h1></div><span className="status">● {status}</span></header>
-    <section className="cards"><article><strong>{events.length}</strong><span>Lượt kiểm soát gần đây</span></article><article><strong>{events.filter(e => e.decision === "approved").length}</strong><span>Được cho phép</span></article><article><strong>{events.filter(e => e.decision !== "approved").length}</strong><span>Cần xử lý</span></article></section>
-    <section className="grid"><div><form onSubmit={analyzeImage}><h2>Phân tích ảnh YOLOv8</h2><label>Ảnh từ camera<input type="file" accept="image/*" onChange={e => setImage(e.target.files?.[0] || null)} required /></label><button>Phân tích ảnh</button>{visionResult && <p>{visionResult}</p>}</form><form onSubmit={check} className="manual"><h2>Kiểm tra thủ công</h2><label>Biển số xe<input value={plate} onChange={e => setPlate(e.target.value)} placeholder="43-A1 123.45" required /></label><label>Face token<input value={face} onChange={e => setFace(e.target.value)} placeholder="Mã từ ArcFace" required /></label><button>Đối soát phương tiện</button></form></div>
-      <section className="events"><h2>Nhật ký ra vào</h2>{events.length === 0 ? <p>Chưa có lượt kiểm soát.</p> : events.map(e => <article key={e.id}><div><b>{e.plate_number || "Không đọc được biển số"}</b><small>{new Date(e.occurred_at).toLocaleString("vi-VN")}</small></div><span className={`tag ${e.decision}`}>{e.decision}</span><p>{e.reason}</p></article>)}</section></section>
+    <section className="cards"><article><strong>{events.length}</strong><span>Lượt kiểm soát gần đây</span></article><article><strong>{events.filter(e => e.decision === "approved").length}</strong><span>Được cho phép</span></article><article><strong>{events.filter(e => e.decision !== "approved").length}</strong><span>Không cho phép</span></article></section>
+    <section className="grid"><div>
+      <form onSubmit={verifyGate}><h2>Quét cổng: biển số + khuôn mặt</h2><p>Tải ảnh có cả người điều khiển và biển số. Không khớp sẽ bị từ chối.</p><label>Ảnh từ camera<input type="file" accept="image/*" onChange={e => setGateImage(e.target.files?.[0] || null)} required /></label><button>Kiểm tra cho ra/vào</button>{gateResult && <p className="result">{gateResult}</p>}</form>
+      <form onSubmit={registerOwner} className="manual"><h2>Đăng ký chủ xe</h2><label>Họ và tên<input value={name} onChange={e => setName(e.target.value)} required /></label><label>Mã sinh viên/nhân sự<input value={campusId} onChange={e => setCampusId(e.target.value)} required /></label><label>Biển số xe<input value={plate} onChange={e => setPlate(e.target.value)} placeholder="43-A1 123.45" required /></label><label>Ảnh khuôn mặt rõ<input type="file" accept="image/*" onChange={e => setPortrait(e.target.files?.[0] || null)} required /></label><button>Đăng ký khuôn mặt và xe</button>{registerResult && <p className="result">{registerResult}</p>}</form>
+    </div><section className="events"><h2>Nhật ký ra vào</h2>{events.length === 0 ? <p>Chưa có lượt kiểm soát.</p> : events.map(e => <article key={e.id}><div><b>{e.plate_number || "Không đọc được biển số"}</b><small>{new Date(e.occurred_at).toLocaleString("vi-VN")}</small></div><span className={`tag ${e.decision}`}>{e.decision}</span><p>{e.reason}</p></article>)}</section></section>
   </main>;
 }
 createRoot(document.getElementById("root")!).render(<App />);
