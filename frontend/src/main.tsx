@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 type Event = { id: string; occurred_at: string; plate_number: string | null; decision: string; reason: string };
-const API = "http://localhost:8000/api/v1";
+const API = "http://127.0.0.1:8000/api/v1";
 
 function App() {
   const [events, setEvents] = useState<Event[]>([]);
