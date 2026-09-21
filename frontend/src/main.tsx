@@ -31,7 +31,8 @@ function App() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Không thể phân tích ảnh");
       const found = result.detections.map((item: { label: string; confidence: number }) => `${item.label} (${item.confidence})`).join(", ");
-      setVisionResult(`${result.model}: ${found || "chưa phát hiện đối tượng"}${result.uses_plate_model ? "" : ". Cần thêm model biển số riêng để nhận diện biển số."}`);
+      const plateText = result.plate_text ? ` Biển số đọc được: ${result.plate_text} (${result.plate_confidence}).` : " Chưa đọc được biển số; hãy dùng ảnh rõ, chụp gần biển số.";
+      setVisionResult(`${result.model}: ${found || "chưa phát hiện đối tượng"}.${plateText}`);
     } catch (error) { setVisionResult(error instanceof Error ? error.message : "Không thể phân tích ảnh"); }
   };
   return <main>

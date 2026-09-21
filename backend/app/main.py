@@ -58,6 +58,8 @@ async def analyze_image(image: UploadFile = File(...)) -> dict:
         "model": analysis.model_name,
         "uses_plate_model": analysis.uses_plate_model,
         "detections": [item.__dict__ for item in analysis.detections],
+        "plate_text": analysis.plate_text,
+        "plate_confidence": analysis.plate_confidence,
     }
 
 
