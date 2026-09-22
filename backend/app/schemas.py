@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -15,14 +14,6 @@ class VehicleCreate(BaseModel):
     plate_number: str = Field(min_length=5, max_length=20)
     owner_id: str
     vehicle_type: Literal["motorbike", "car"] = "motorbike"
-
-
-class AuthorizationCreate(BaseModel):
-    vehicle_id: str
-    borrower_id: str
-    valid_from: datetime
-    valid_until: datetime
-    note: str | None = Field(default=None, max_length=300)
 
 
 class RecognitionRequest(BaseModel):

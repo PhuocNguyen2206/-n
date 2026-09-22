@@ -7,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import get_connection, initialize_database
 from .schemas import (
-    AuthorizationCreate,
     PersonCreate,
     RecognitionRequest,
     RecognitionResult,
@@ -138,7 +137,7 @@ async def verify_gate_image(
         except ValueError:
             continue
         try:
-            faces.append(get_face_service().extract(image_data))
+            faces.extend(get_face_service().extract_all(image_data))
         except ValueError:
             pass
     event_id = str(uuid4())
@@ -226,34 +225,6 @@ def list_vehicles() -> list[dict]:
         return [dict(row) for row in rows]
 
 
-@app.post("/api/v1/authorizations", status_code=201)
-def create_authorization(payload: AuthorizationCreate) -> dict:
-    if payload.valid_until <= payload.valid_from:
-        raise HTTPException(422, "Thời điểm hết hạn phải sau thời điểm bắt đầu")
-    authorization_id = str(uuid4())
-    with get_connection() as connection:
-        connection.execute(
-            "INSERT INTO vehicle_authorizations (id, vehicle_id, borrower_id, valid_from, valid_until, note) VALUES (?, ?, ?, ?, ?, ?)",
-            (authorization_id, payload.vehicle_id, payload.borrower_id, payload.valid_from.isoformat(), payload.valid_until.isoformat(), payload.note),
-        )
-    return {"id": authorization_id, **payload.model_dump()}
-
-
-@app.get("/api/v1/authorizations")
-def list_authorizations() -> list[dict]:
-    with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT a.*, v.plate_number, p.full_name AS borrower_name
-            FROM vehicle_authorizations a
-            JOIN vehicles v ON v.id = a.vehicle_id
-            JOIN people p ON p.id = a.borrower_id
-            ORDER BY a.valid_until DESC
-            """
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
 @app.get("/api/v1/dashboard/summary")
 def dashboard_summary() -> dict:
     with get_connection() as connection:
@@ -288,11 +259,8 @@ def process_recognition(payload: RecognitionRequest) -> RecognitionResult:
             decision, reason = "denied", "Không nhận diện được người điều khiển"
         else:
             person_id, person_name = person["id"], person["full_name"]
-            authorized = vehicle["owner_id"] == person_id or connection.execute(
-                "SELECT 1 FROM vehicle_authorizations WHERE vehicle_id = ? AND borrower_id = ? AND valid_from <= ? AND valid_until >= ?",
-                (vehicle["id"], person_id, now.isoformat(), now.isoformat()),
-            ).fetchone()
-            decision, reason = ("approved", "Xác thực chính chủ hoặc ủy quyền hợp lệ") if authorized else ("denied", "Người điều khiển chưa được ủy quyền dùng phương tiện này")
+            authorized = vehicle["owner_id"] == person_id
+            decision, reason = ("approved", "Xác thực chính chủ hợp lệ") if authorized else ("denied", "Người điều khiển không phải chủ xe đã đăng ký")
         connection.execute(
             "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event_id, now.isoformat(), payload.direction, plate, person_id, decision, reason, payload.plate_confidence, payload.face_confidence),

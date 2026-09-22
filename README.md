@@ -6,6 +6,7 @@ Sản phẩm đồ án kiểm soát phương tiện tại cổng trường bằn
 
 - Đăng ký chủ xe, biển số và mẫu khuôn mặt.
 - Quét riêng ảnh khuôn mặt và ảnh xe/biển số, phù hợp mô phỏng hai camera.
+- Màn hình làn xe thời gian thực: mở hai luồng camera, quét tự động mỗi 3 giây và hiển thị quyết định cho phép/từ chối tại chỗ.
 - YOLOv8 phát hiện xe/người; EasyOCR đọc ký tự biển số; FaceNet tạo đặc trưng khuôn mặt trên CPU.
 - Cơ chế fail-closed: chỉ `approved` khi biển số thuộc xe đã đăng ký và khuôn mặt hợp lệ. Mọi trường hợp khác bị từ chối và ghi nhật ký.
 - Phiên gửi xe: khi xe vào, hệ thống ghi nhận chủ xe và những người đi cùng đã đăng ký; lúc xe ra, một trong những người đó điều khiển xe vẫn hợp lệ.
@@ -30,6 +31,10 @@ Khi phát triển cục bộ, chạy API từ `backend` và frontend từ `front
 2. Khi xe vào có nhiều người, chọn nhiều ảnh khuôn mặt và một ảnh biển số; tất cả người đã đăng ký được ghi vào phiên gửi xe.
 3. Ở `Quét kiểm soát cổng`, chọn ảnh khuôn mặt và ảnh biển số, rồi chọn xe vào hoặc xe ra.
 4. Xem quyết định và chi tiết trong `Nhật ký ra vào`.
+
+## Camera thực tế
+
+Mục `Làn xe thời gian thực` dùng camera được trình duyệt cấp quyền. Bấm `Bật camera tại làn xe`, chọn lối vào hoặc lối ra rồi bấm `Bắt đầu quét tự động`. Khi triển khai tương tự cổng thương mại, thay camera trình duyệt bằng hai camera IP/RTSP (một camera góc mặt, một camera góc biển số) và kết nối đầu ra relay/barrier với quyết định `approved` của API.
 
 ## Mô hình và dữ liệu
 

@@ -20,19 +20,34 @@ class FaceService:
         self.detector = MTCNN(keep_all=True, device=self.device, min_face_size=40)
         self.encoder = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
 
-    def extract(self, image_data: bytes) -> FaceData:
+    def extract_all(self, image_data: bytes) -> list[FaceData]:
+        """Trích xuất mọi khuôn mặt rõ trong một khung hình camera.
+
+        Việc này cho phép ghi nhận cả người lái và người ngồi cùng xe khi họ
+        cùng xuất hiện ở làn vào. Hàm ``extract`` bên dưới vẫn giữ lại cho
+        thao tác đăng ký chỉ cần một khuôn mặt tốt nhất.
+        """
         image = Image.open(__import__("io").BytesIO(image_data)).convert("RGB")
         boxes, probabilities = self.detector.detect(image)
         if boxes is None or probabilities is None:
             raise ValueError("Không phát hiện được khuôn mặt rõ trong ảnh")
-        index = int(np.argmax(probabilities))
-        face = self.detector.extract(image, np.asarray([boxes[index]]), save_path=None)
-        if face is None:
+        results: list[FaceData] = []
+        for index, probability in sorted(enumerate(probabilities), key=lambda item: float(item[1]), reverse=True):
+            if probability is None or np.isnan(probability):
+                continue
+            face = self.detector.extract(image, np.asarray([boxes[index]]), save_path=None)
+            if face is None:
+                continue
+            with torch.inference_mode():
+                vector = self.encoder(face.to(self.device))[0]
+            vector = torch.nn.functional.normalize(vector, p=2, dim=0).cpu().numpy()
+            results.append(FaceData(vector.astype(float).tolist(), round(float(probability), 3)))
+        if not results:
             raise ValueError("Không thể trích xuất khuôn mặt")
-        with torch.inference_mode():
-            vector = self.encoder(face.to(self.device))[0]
-        vector = torch.nn.functional.normalize(vector, p=2, dim=0).cpu().numpy()
-        return FaceData(vector.astype(float).tolist(), round(float(probabilities[index]), 3))
+        return results
+
+    def extract(self, image_data: bytes) -> FaceData:
+        return max(self.extract_all(image_data), key=lambda item: item.confidence)
 
     @staticmethod
     def similarity(first: list[float], second: list[float]) -> float:
