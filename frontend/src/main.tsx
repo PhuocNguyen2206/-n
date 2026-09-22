@@ -8,6 +8,7 @@ import "./evidence.css";
 import "./history.css";
 import "./history-filter.css";
 import "./showcase.css";
+import "./lane-auto.css";
 
 type Event = { id: string; occurred_at: string; direction: string; plate_number: string | null; decision: string; reason: string; evidence_url?: string | null };
 type GateSession = { id: string; plate_number: string; entered_at: string; exited_at?: string | null; status: string; entry_decision?: string | null; exit_decision?: string | null; exit_reason?: string | null; entry_evidence_url?: string | null; exit_evidence_url?: string | null };
@@ -21,7 +22,7 @@ function App() {
   const [historyStart, setHistoryStart] = useState("");
   const [historyEnd, setHistoryEnd] = useState("");
   const [currentTime, setCurrentTime] = useState(() => new Date());
-  const [direction, setDirection] = useState("exit");
+  const [direction, setDirection] = useState("entry");
   const faceVideoRef = useRef<HTMLVideoElement>(null);
   const faceOverlayRef = useRef<HTMLCanvasElement>(null);
   const exitOverlayRef = useRef<HTMLCanvasElement>(null);
@@ -80,11 +81,17 @@ function App() {
     scanningRef.current = true;
     try {
       const [faceFrame, plateFrame] = await Promise.all([frameFromVideo(faceVideoRef.current, "face-camera.jpg"), frameFromVideo(plateVideoRef.current, "plate-camera.jpg")]);
-      const form = new FormData(); form.append("images", faceFrame); form.append("images", plateFrame); form.append("direction", direction); form.append("automatic", "true");
-      const response = await fetch(`${API}/gate/verify`, { method: "POST", body: form }); const result = await response.json();
-      if (!response.ok) throw new Error(result.detail || "Không thể quét camera");
-      const label = result.decision === "approved" ? "✓ CHO PHÉP QUA CỔNG" : result.decision === "manual_review" ? "… ĐANG QUÉT TỰ ĐỘNG" : "✕ GIỮ XE - CẦN KIỂM TRA";
-      setLiveResult(`${label}: ${result.reason}${result.plate_number ? ` · ${result.plate_number}` : ""}`); load();
+      const scanLane = async (frame: File, laneDirection: "entry" | "exit") => {
+        const form = new FormData(); form.append("images", frame); form.append("direction", laneDirection); form.append("automatic", "true");
+        const response = await fetch(`${API}/gate/verify`, { method: "POST", body: form }); const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Không thể quét camera");
+        return result;
+      };
+      const entryResult = await scanLane(faceFrame, "entry");
+      const hasDedicatedExitCamera = plateStreamRef.current !== faceStreamRef.current;
+      const exitResult = hasDedicatedExitCamera ? await scanLane(plateFrame, "exit") : null;
+      const format = (lane: string, result: { decision: string; reason: string; plate_number?: string | null }) => `${lane}: ${result.decision === "approved" ? "✓ CHO PHÉP" : result.decision === "manual_review" ? "… ĐANG CHỜ" : "✕ GIỮ XE"} — ${result.reason}${result.plate_number ? ` · ${result.plate_number}` : ""}`;
+      setLiveResult(`${format("Làn vào", entryResult)}${exitResult ? ` | ${format("Làn ra", exitResult)}` : " | Làn ra đang chờ camera riêng"}`); load();
     } catch (error) { setLiveResult(error instanceof Error ? error.message : "Lỗi camera"); }
     finally { scanningRef.current = false; }
   };

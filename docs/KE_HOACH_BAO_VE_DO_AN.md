@@ -12,9 +12,10 @@ Trình diễn luồng xe vào - xe ra theo thời gian thực: AI quét, bảo v
 | Nhận diện khuôn mặt | Đã có | Vẽ khung mặt trực tiếp trên video |
 | YOLO & OCR cơ bản | Đã có | Phát hiện người/xe; đọc biển số khi ảnh đủ rõ |
 | Nhật ký và lọc theo giờ | Đã có | Có ảnh bằng chứng và lọc khoảng thời gian |
-| So sánh ảnh vào - ra | Đang làm | Hiển thị song song ảnh, biển số và kết luận |
-| Bảng điều khiển bảo vệ/barrier | Đang làm | Đèn xanh/đỏ, quyết định lớn, trạng thái barrier |
-| Biểu đồ lượt xe theo giờ | Đang làm | Cập nhật theo dữ liệu trong ngày |
+| So sánh ảnh vào - ra | Đã có | Hiển thị song song ảnh, biển số và kết luận |
+| Bảng điều khiển bảo vệ/barrier | Đã có | Đèn xanh/đỏ, quyết định lớn, trạng thái barrier |
+| Biểu đồ lượt xe theo giờ | Đã có | Cập nhật theo dữ liệu trong ngày |
+| Tự nhận làn theo camera | Đã có | Camera 01 gửi lượt vào, Camera 02 gửi lượt ra |
 | Model biển số Việt Nam riêng | Cần dữ liệu | Huấn luyện/đưa vào model chuyên biệt |
 | Kết nối barrier phần cứng | Tùy chọn | Relay/Arduino nhận lệnh mở khi được duyệt |
 
