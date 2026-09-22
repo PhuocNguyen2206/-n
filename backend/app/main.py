@@ -1,9 +1,11 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .database import get_connection, initialize_database
 from .schemas import RecognitionResult
@@ -11,6 +13,9 @@ from .services.vision import VisionService
 from .services.face import FaceService
 
 app = FastAPI(title="Vehicle AI Gateway", version="0.1.0")
+EVIDENCE_DIRECTORY = Path("data/evidence")
+EVIDENCE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+app.mount("/evidence", StaticFiles(directory=str(EVIDENCE_DIRECTORY)), name="evidence")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -43,6 +48,13 @@ def get_face_service() -> FaceService:
     if face_service is None:
         face_service = FaceService()
     return face_service
+
+
+def save_evidence(event_id: str, direction: str, image_data: bytes) -> str:
+    """Lưu ảnh bằng chứng cục bộ, tách biệt với dữ liệu nhúng khuôn mặt."""
+    filename = f"{event_id}_{direction}.jpg"
+    (EVIDENCE_DIRECTORY / filename).write_bytes(image_data)
+    return filename
 
 
 @app.get("/api/v1/health")
@@ -84,11 +96,12 @@ async def verify_gate_image(
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
-    plate, plate_confidence, faces = None, 0.0, []
+    plate, plate_confidence, faces, frames = None, 0.0, [], []
     for image in images:
         if not image.content_type or not image.content_type.startswith("image/"):
             raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
         image_data = await image.read()
+        frames.append(image_data)
         try:
             analysis = get_vision_service().analyze_image(image_data)
             if not plate and analysis.plate_text:
@@ -101,6 +114,7 @@ async def verify_gate_image(
             pass
     event_id = str(uuid4())
     decision, reason, score = "denied", "Không đọc được biển số xe", 0.0
+    evidence_path = None
     with get_connection() as connection:
         # Camera tự động gửi nhiều khung hình. Khi khung chưa đủ dữ liệu, chỉ
         # báo trạng thái chờ thay vì ghi hàng loạt lỗi vào nhật ký bảo vệ.
@@ -116,6 +130,11 @@ async def verify_gate_image(
         elif plate and direction == "entry":
             existing = connection.execute("SELECT id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
             decision, reason = "approved", ("Xe đã có lượt vào đang mở; bỏ qua khung hình lặp" if existing else "Đã ghi nhận xe và khuôn mặt tại thời điểm vào")
+            if automatic and existing:
+                return RecognitionResult(
+                    event_id=existing["id"], decision="approved", reason=reason, plate_number=plate,
+                    face_detected=True, face_detection_confidence=max(face.confidence for face in faces),
+                )
         elif plate:
             session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
             if not session:
@@ -128,16 +147,18 @@ async def verify_gate_image(
                     decision, reason = "approved", "Khuôn mặt khớp với người đã vào cùng xe"
                 else:
                     reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào"
+        if plate and faces and frames:
+            evidence_path = save_evidence(event_id, direction, frames[0])
         connection.execute(
-            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, None, decision, reason, plate_confidence, score),
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, None, decision, reason, plate_confidence, score, evidence_path),
         )
         if plate and faces and direction == "entry" and decision == "approved" and not existing:
             session_id = str(uuid4())
-            connection.execute("INSERT INTO gate_sessions (id, plate_number, entry_event_id, entered_at) VALUES (?, ?, ?, ?)", (session_id, plate, event_id, datetime.now(timezone.utc).isoformat()))
+            connection.execute("INSERT INTO gate_sessions (id, plate_number, entry_event_id, entered_at, entry_evidence_path) VALUES (?, ?, ?, ?, ?)", (session_id, plate, event_id, datetime.now(timezone.utc).isoformat(), evidence_path))
             connection.executemany("INSERT INTO gate_session_faces (session_id, embedding, confidence) VALUES (?, ?, ?)", [(session_id, json.dumps(face.embedding), face.confidence) for face in faces])
         if plate and direction == "exit" and decision == "approved" and session:
-            connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), session["id"]))
+            connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), event_id, evidence_path, session["id"]))
     return RecognitionResult(
         event_id=event_id, decision=decision, reason=reason,
         plate_number=plate, face_detected=bool(faces),
@@ -162,4 +183,10 @@ def dashboard_summary() -> dict:
 @app.get("/api/v1/events")
 def list_events(limit: int = 20) -> list[dict]:
     with get_connection() as connection:
-        return [dict(row) for row in connection.execute("SELECT * FROM access_events ORDER BY occurred_at DESC LIMIT ?", (min(limit, 100),))]
+        rows = connection.execute("SELECT * FROM access_events ORDER BY occurred_at DESC LIMIT ?", (min(limit, 100),)).fetchall()
+        events = []
+        for row in rows:
+            event = dict(row)
+            event["evidence_url"] = f"/evidence/{event['evidence_path']}" if event["evidence_path"] else None
+            events.append(event)
+        return events

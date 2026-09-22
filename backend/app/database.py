@@ -78,6 +78,16 @@ def initialize_database() -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(people)")}
         if "face_embedding" not in columns:
             connection.execute("ALTER TABLE people ADD COLUMN face_embedding TEXT")
+        event_columns = {row[1] for row in connection.execute("PRAGMA table_info(access_events)")}
+        if "evidence_path" not in event_columns:
+            connection.execute("ALTER TABLE access_events ADD COLUMN evidence_path TEXT")
+        session_columns = {row[1] for row in connection.execute("PRAGMA table_info(gate_sessions)")}
+        if "entry_evidence_path" not in session_columns:
+            connection.execute("ALTER TABLE gate_sessions ADD COLUMN entry_evidence_path TEXT")
+        if "exit_evidence_path" not in session_columns:
+            connection.execute("ALTER TABLE gate_sessions ADD COLUMN exit_evidence_path TEXT")
+        if "exit_event_id" not in session_columns:
+            connection.execute("ALTER TABLE gate_sessions ADD COLUMN exit_event_id TEXT")
 
 
 @contextmanager
