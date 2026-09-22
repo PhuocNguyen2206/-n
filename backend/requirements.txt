@@ -8,3 +8,6 @@ torch==2.5.1+cpu
 torchvision==0.20.1+cpu
 easyocr==1.7.2
 facenet-pytorch==2.6.0
+numpy==1.26.4
+Pillow==10.2.0
+opencv-python-headless==4.10.0.84

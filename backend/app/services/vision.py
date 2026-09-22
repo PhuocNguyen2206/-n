@@ -39,9 +39,13 @@ class AnalysisResult:
 
 class VisionService:
     def __init__(self) -> None:
-        plate_model = Path(os.getenv("YOLO_MODEL_PATH", "models/license_plate.pt"))
+        # Resolve bundled weights from the backend directory so the API works
+        # whether it is launched from the project root, a service manager, or IDE.
+        backend_directory = Path(__file__).resolve().parents[2]
+        configured_model = Path(os.getenv("YOLO_MODEL_PATH", "models/license_plate.pt"))
+        plate_model = configured_model if configured_model.is_absolute() else backend_directory / configured_model
         self.uses_plate_model = plate_model.is_file()
-        self.model_path = str(plate_model if self.uses_plate_model else Path("yolov8n.pt"))
+        self.model_path = str(plate_model if self.uses_plate_model else backend_directory / "yolov8n.pt")
         self.model = YOLO(self.model_path)
         self.reader = easyocr.Reader(["en"], gpu=False, verbose=False)
 

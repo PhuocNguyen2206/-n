@@ -1,11 +1,12 @@
 """Phát hiện và đối chiếu khuôn mặt bằng FaceNet trên CPU."""
 
 from dataclasses import dataclass
+from io import BytesIO
 
 import numpy as np
 import torch
 from facenet_pytorch import InceptionResnetV1, MTCNN
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 
 @dataclass
@@ -20,6 +21,13 @@ class FaceService:
         self.detector = MTCNN(keep_all=True, device=self.device, min_face_size=40)
         self.encoder = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
 
+    @staticmethod
+    def _open_image(image_data: bytes) -> Image.Image:
+        try:
+            return Image.open(BytesIO(image_data)).convert("RGB")
+        except (UnidentifiedImageError, OSError) as error:
+            raise ValueError("Tệp tải lên không phải ảnh hợp lệ") from error
+
     def extract_all(self, image_data: bytes) -> list[FaceData]:
         """Trích xuất mọi khuôn mặt rõ trong một khung hình camera.
 
@@ -27,7 +35,7 @@ class FaceService:
         cùng xuất hiện ở làn vào. Hàm ``extract`` bên dưới vẫn giữ lại cho
         thao tác đăng ký chỉ cần một khuôn mặt tốt nhất.
         """
-        image = Image.open(__import__("io").BytesIO(image_data)).convert("RGB")
+        image = self._open_image(image_data)
         boxes, probabilities = self.detector.detect(image)
         if boxes is None or probabilities is None:
             raise ValueError("Không phát hiện được khuôn mặt rõ trong ảnh")
@@ -48,7 +56,7 @@ class FaceService:
 
     def detect(self, image_data: bytes) -> dict:
         """Phát hiện nhanh vị trí khuôn mặt để vẽ trực tiếp trên giao diện."""
-        image = Image.open(__import__("io").BytesIO(image_data)).convert("RGB")
+        image = self._open_image(image_data)
         boxes, probabilities = self.detector.detect(image)
         faces = []
         if boxes is not None and probabilities is not None:
