@@ -190,3 +190,28 @@ def list_events(limit: int = 20) -> list[dict]:
             event["evidence_url"] = f"/evidence/{event['evidence_path']}" if event["evidence_path"] else None
             events.append(event)
         return events
+
+
+@app.get("/api/v1/sessions/recent")
+def recent_gate_sessions(limit: int = 6) -> list[dict]:
+    """Dữ liệu đối chiếu trực quan giữa bằng chứng lúc vào và lúc ra."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT gate_sessions.*, entry_event.decision AS entry_decision,
+                   exit_event.decision AS exit_decision, exit_event.reason AS exit_reason
+            FROM gate_sessions
+            LEFT JOIN access_events AS entry_event ON entry_event.id = gate_sessions.entry_event_id
+            LEFT JOIN access_events AS exit_event ON exit_event.id = gate_sessions.exit_event_id
+            ORDER BY COALESCE(gate_sessions.exited_at, gate_sessions.entered_at) DESC
+            LIMIT ?
+            """,
+            (min(limit, 20),),
+        ).fetchall()
+        sessions = []
+        for row in rows:
+            session = dict(row)
+            session["entry_evidence_url"] = f"/evidence/{session['entry_evidence_path']}" if session["entry_evidence_path"] else None
+            session["exit_evidence_url"] = f"/evidence/{session['exit_evidence_path']}" if session["exit_evidence_path"] else None
+            sessions.append(session)
+        return sessions
