@@ -67,6 +67,17 @@ async def analyze_image(image: UploadFile = File(...)) -> dict:
     }
 
 
+@app.post("/api/v1/face/analyze")
+async def analyze_face(image: UploadFile = File(...)) -> dict:
+    """Chế độ demo: chỉ phát hiện khuôn mặt, không lưu và không đối chiếu danh tính."""
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+    try:
+        return get_face_service().detect(await image.read())
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
 async def verify_gate_image(
     images: list[UploadFile] = File(...), direction: str = Form("exit")

@@ -46,6 +46,19 @@ class FaceService:
             raise ValueError("Không thể trích xuất khuôn mặt")
         return results
 
+    def detect(self, image_data: bytes) -> dict:
+        """Phát hiện nhanh vị trí khuôn mặt để vẽ trực tiếp trên giao diện."""
+        image = Image.open(__import__("io").BytesIO(image_data)).convert("RGB")
+        boxes, probabilities = self.detector.detect(image)
+        faces = []
+        if boxes is not None and probabilities is not None:
+            for box, confidence in zip(boxes, probabilities):
+                if confidence is None or np.isnan(confidence):
+                    continue
+                left, top, right, bottom = [max(0, round(float(value), 1)) for value in box]
+                faces.append({"box": [left, top, right, bottom], "confidence": round(float(confidence), 3)})
+        return {"width": image.width, "height": image.height, "faces": faces}
+
     def extract(self, image_data: bytes) -> FaceData:
         return max(self.extract_all(image_data), key=lambda item: item.confidence)
 
