@@ -13,6 +13,11 @@ from pathlib import Path
 import cv2
 import easyocr
 import numpy as np
+
+# Không ghi cấu hình YOLO vào thư mục tài khoản Windows; dự án tự mang cấu hình theo data/.
+_yolo_config_dir = Path("data/ultralytics").resolve()
+_yolo_config_dir.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("YOLO_CONFIG_DIR", str(_yolo_config_dir))
 from ultralytics import YOLO
 
 

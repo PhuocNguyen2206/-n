@@ -44,6 +44,21 @@ def initialize_database() -> None:
               plate_confidence REAL,
               face_confidence REAL
             );
+            CREATE TABLE IF NOT EXISTS vehicle_sessions (
+              id TEXT PRIMARY KEY,
+              vehicle_id TEXT NOT NULL REFERENCES vehicles(id),
+              entry_event_id TEXT NOT NULL REFERENCES access_events(id),
+              entered_at TEXT NOT NULL,
+              exited_at TEXT,
+              status TEXT NOT NULL DEFAULT 'open'
+            );
+            CREATE TABLE IF NOT EXISTS vehicle_session_people (
+              session_id TEXT NOT NULL REFERENCES vehicle_sessions(id),
+              person_id TEXT NOT NULL REFERENCES people(id),
+              PRIMARY KEY (session_id, person_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_access_events_plate ON access_events(plate_number);
+            CREATE INDEX IF NOT EXISTS idx_vehicle_sessions_vehicle ON vehicle_sessions(vehicle_id, status);
             """
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(people)")}

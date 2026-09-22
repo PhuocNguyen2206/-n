@@ -126,7 +126,7 @@ async def verify_gate_image(
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
-    plate, plate_confidence, face = None, 0.0, None
+    plate, plate_confidence, faces = None, 0.0, []
     for image in images:
         if not image.content_type or not image.content_type.startswith("image/"):
             raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
@@ -137,35 +137,54 @@ async def verify_gate_image(
                 plate, plate_confidence = analysis.plate_text, analysis.plate_confidence or 0.0
         except ValueError:
             continue
-        if face is None:
-            try:
-                face = get_face_service().extract(image_data)
-            except ValueError:
-                pass
+        try:
+            faces.append(get_face_service().extract(image_data))
+        except ValueError:
+            pass
     event_id = str(uuid4())
     decision, reason, person_id, person_name, score = "denied", "Không đọc được biển số xe", None, None, 0.0
     with get_connection() as connection:
         vehicle = connection.execute("SELECT * FROM vehicles WHERE plate_number = ? AND active = 1", (plate,)).fetchone() if plate else None
-        if face is None:
+        known_people = connection.execute("SELECT * FROM people WHERE face_embedding IS NOT NULL").fetchall()
+        matched_people: dict[str, tuple[object, float]] = {}
+        for captured_face in faces:
+            for candidate in known_people:
+                similarity = get_face_service().similarity(captured_face.embedding, json.loads(candidate["face_embedding"]))
+                if similarity >= 0.45 and (candidate["id"] not in matched_people or similarity > matched_people[candidate["id"]][1]):
+                    matched_people[candidate["id"]] = (candidate, similarity)
+        if not faces:
             reason = "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn"
         elif vehicle:
-            candidates = connection.execute(
-                "SELECT p.* FROM people p WHERE p.id = ? UNION SELECT p.* FROM people p JOIN vehicle_authorizations a ON a.borrower_id = p.id WHERE a.vehicle_id = ? AND a.valid_from <= ? AND a.valid_until >= ?",
-                (vehicle["owner_id"], vehicle["id"], datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
-            ).fetchall()
-            matched = None
-            for candidate in candidates:
-                if candidate["face_embedding"]:
-                    similarity = get_face_service().similarity(face.embedding, json.loads(candidate["face_embedding"]))
-                    if similarity > score:
-                        score, matched = similarity, candidate
-            if matched and score >= 0.45:
-                decision, reason = "approved", "Biển số và khuôn mặt chủ xe/người được ủy quyền khớp"
-                person_id, person_name = matched["id"], matched["full_name"]
-            elif not candidates:
-                reason = "Chủ xe chưa đăng ký khuôn mặt"
+            owner_match = matched_people.get(vehicle["owner_id"])
+            if direction == "entry" and owner_match:
+                decision, reason = "approved", "Chủ xe hợp lệ; đã ghi nhận những người cùng vào xe"
+                owner, score = owner_match
+                person_id, person_name = owner["id"], owner["full_name"]
+                session_id = str(uuid4())
+                connection.execute(
+                    "INSERT INTO vehicle_sessions (id, vehicle_id, entry_event_id, entered_at) VALUES (?, ?, ?, ?)",
+                    (session_id, vehicle["id"], event_id, datetime.now(timezone.utc).isoformat()),
+                )
+                for matched_id in matched_people:
+                    connection.execute("INSERT INTO vehicle_session_people (session_id, person_id) VALUES (?, ?)", (session_id, matched_id))
+            elif direction == "entry":
+                reason = "Lúc xe vào phải nhận diện được khuôn mặt chủ xe"
             else:
-                reason = "Khuôn mặt người điều khiển không khớp với chủ xe hoặc người được ủy quyền"
+                session = connection.execute(
+                    "SELECT * FROM vehicle_sessions WHERE vehicle_id = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (vehicle["id"],)
+                ).fetchone()
+                allowed_ids = {vehicle["owner_id"]}
+                if session:
+                    allowed_ids = {row["person_id"] for row in connection.execute("SELECT person_id FROM vehicle_session_people WHERE session_id = ?", (session["id"],))}
+                valid_matches = [(candidate, similarity) for candidate_id, (candidate, similarity) in matched_people.items() if candidate_id in allowed_ids]
+                if valid_matches:
+                    matched, score = max(valid_matches, key=lambda item: item[1])
+                    decision, reason = "approved", "Người điều khiển đã được ghi nhận cùng xe khi vào cổng"
+                    person_id, person_name = matched["id"], matched["full_name"]
+                    if session:
+                        connection.execute("UPDATE vehicle_sessions SET status = 'closed', exited_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), session["id"]))
+                else:
+                    reason = "Khuôn mặt không thuộc nhóm người đã vào cùng phương tiện này"
         elif plate:
             reason = "Không tìm thấy phương tiện đã đăng ký"
         connection.execute(
@@ -174,8 +193,8 @@ async def verify_gate_image(
         )
     return RecognitionResult(
         event_id=event_id, decision=decision, reason=reason, person_name=person_name,
-        plate_number=plate, face_detected=face is not None,
-        face_detection_confidence=face.confidence if face else None,
+        plate_number=plate, face_detected=bool(faces),
+        face_detection_confidence=max((face.confidence for face in faces), default=None),
         face_similarity=score if plate else None,
     )
 
