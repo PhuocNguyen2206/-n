@@ -80,7 +80,7 @@ async def analyze_face(image: UploadFile = File(...)) -> dict:
 
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
 async def verify_gate_image(
-    images: list[UploadFile] = File(...), direction: str = Form("exit")
+    images: list[UploadFile] = File(...), direction: str = Form("exit"), automatic: bool = Form(False)
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
@@ -102,6 +102,15 @@ async def verify_gate_image(
     event_id = str(uuid4())
     decision, reason, score = "denied", "Không đọc được biển số xe", 0.0
     with get_connection() as connection:
+        # Camera tự động gửi nhiều khung hình. Khi khung chưa đủ dữ liệu, chỉ
+        # báo trạng thái chờ thay vì ghi hàng loạt lỗi vào nhật ký bảo vệ.
+        if automatic and (not plate or not faces):
+            waiting_reason = "Đang chờ biển số xe rõ" if not plate else "Đang chờ khuôn mặt rõ"
+            return RecognitionResult(
+                event_id="live-preview", decision="manual_review", reason=waiting_reason,
+                plate_number=plate, face_detected=bool(faces),
+                face_detection_confidence=max((face.confidence for face in faces), default=None),
+            )
         if not faces:
             reason = "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn"
         elif plate and direction == "entry":
