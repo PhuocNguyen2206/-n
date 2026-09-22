@@ -4,6 +4,7 @@ import "./styles.css";
 import "./live.css";
 
 type Event = { id: string; occurred_at: string; plate_number: string | null; decision: string; reason: string };
+type CameraDevice = { deviceId: string; label: string };
 const API = "http://127.0.0.1:8000/api/v1";
 
 function App() {
@@ -22,11 +23,26 @@ function App() {
   const [liveCameraOn, setLiveCameraOn] = useState(false);
   const [liveScanning, setLiveScanning] = useState(false);
   const [liveResult, setLiveResult] = useState("Sẵn sàng kết nối camera tại làn xe");
+  const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
+  const [faceDeviceId, setFaceDeviceId] = useState("");
+  const [plateDeviceId, setPlateDeviceId] = useState("");
   const load = async () => {
     try { const eventResponse = await fetch(`${API}/events`); setEvents(await eventResponse.json()); setStatus("Hệ thống sẵn sàng"); }
     catch { setStatus("Chưa kết nối API"); }
   };
   useEffect(() => { load(); }, []);
+
+  const refreshCameraDevices = async () => {
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices())
+        .filter(device => device.kind === "videoinput")
+        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Camera ${index + 1}` }));
+      setCameraDevices(devices);
+      if (!faceDeviceId && devices[0]) setFaceDeviceId(devices[0].deviceId);
+      if (!plateDeviceId && devices[0]) setPlateDeviceId(devices[0].deviceId);
+      setLiveResult(devices.length ? "Đã tìm thấy camera. Chọn DroidCam cho làn cần dùng." : "Chưa tìm thấy camera. Hãy mở DroidCam Client rồi tải lại danh sách.");
+    } catch { setLiveResult("Không thể đọc danh sách camera. Hãy cho phép quyền Camera rồi thử lại."); }
+  };
 
   const verifyGate = async (event: FormEvent) => {
     event.preventDefault(); if (!faceImages.length && !vehicleImage) return;
@@ -64,15 +80,20 @@ function App() {
 
   const startLiveCamera = async () => {
     try {
-      const faceStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      const devices = cameraDevices.length ? cameraDevices : (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "videoinput").map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Camera ${index + 1}` }));
+      if (!devices.length) throw new Error("Không tìm thấy camera");
+      setCameraDevices(devices);
+      const selectedFace = faceDeviceId || devices[0].deviceId;
+      const selectedPlate = plateDeviceId || selectedFace;
+      const faceStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: selectedFace }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       let plateStream: MediaStream;
-      try { plateStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }); }
-      catch { plateStream = faceStream; }
+      if (selectedPlate === selectedFace) plateStream = faceStream;
+      else plateStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: selectedPlate }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       faceStreamRef.current = faceStream; plateStreamRef.current = plateStream;
       if (faceVideoRef.current) { faceVideoRef.current.srcObject = faceStream; await faceVideoRef.current.play(); }
       if (plateVideoRef.current) { plateVideoRef.current.srcObject = plateStream; await plateVideoRef.current.play(); }
       setLiveCameraOn(true); setLiveResult("Camera đã kết nối. Bấm quét tự động để kiểm soát làn xe.");
-    } catch { setLiveResult("Không thể mở camera. Hãy kiểm tra quyền Camera của trình duyệt."); }
+    } catch (error) { setLiveResult(error instanceof Error ? error.message : "Không thể mở camera. Hãy kiểm tra quyền Camera của trình duyệt."); }
   };
 
   const stopLiveCamera = () => {
@@ -93,7 +114,7 @@ function App() {
     <header><div className="brand"><div className="brand-mark">AI</div><div><p className="eyebrow">CỔNG KIỂM SOÁT THÔNG MINH</p><h1>Nhận diện AI</h1></div></div><span className="status"><i />{status}</span></header>
     <section className="hero"><div><p className="eyebrow">GIÁM SÁT RA VÀO</p><h2>Kiểm tra xe và khuôn mặt<br /><em>trong vài giây.</em></h2><p>Lúc vào, AI lưu biển số và khuôn mặt. Lúc ra, hệ thống đối chiếu với chính lượt xe đó.</p></div><div className="hero-shield">⌁<span>Protected</span></div></section>
     <section className="cards"><article><span className="card-icon blue">◷</span><div><strong>{events.length}</strong><span>Lượt kiểm soát gần đây</span></div></article><article><span className="card-icon green">✓</span><div><strong>{events.filter(e => e.decision === "approved").length}</strong><span>Được cho phép</span></div></article><article><span className="card-icon red">×</span><div><strong>{events.filter(e => e.decision !== "approved").length}</strong><span>Không cho phép</span></div></article></section>
-    <section className="lane-console"><div className="lane-head"><div><p className="eyebrow">LIVE GATE CONTROL</p><h2>Làn xe thời gian thực</h2><p>Hai camera đồng bộ: người điều khiển và biển số.</p></div><span className={liveCameraOn ? "live-badge active" : "live-badge"}><i />{liveCameraOn ? "CAMERA ONLINE" : "CAMERA OFFLINE"}</span></div><div className="live-feeds"><article><div className="feed-label">CAM 01 · KHUÔN MẶT</div><video ref={faceVideoRef} autoPlay muted playsInline /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Chưa kết nối camera"}</span></article><article><div className="feed-label">CAM 02 · BIỂN SỐ</div><video ref={plateVideoRef} autoPlay muted playsInline /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Chưa kết nối camera"}</span></article></div><div className="lane-actions"><label>Hướng làn xe<select value={direction} onChange={e => setDirection(e.target.value)}><option value="entry">Lối vào</option><option value="exit">Lối ra</option></select></label><div className="live-buttons">{!liveCameraOn ? <button type="button" onClick={startLiveCamera}>Bật camera tại làn xe</button> : <><button type="button" onClick={toggleLiveScan}>{liveScanning ? "Tạm dừng quét" : "Bắt đầu quét tự động"}</button><button type="button" className="secondary" onClick={stopLiveCamera}>Dừng camera</button></>}</div></div><p className={`gate-decision ${liveResult.startsWith("✓") ? "allow" : liveResult.startsWith("✕") ? "block" : ""}`}>{liveResult}</p></section>
+    <section className="lane-console"><div className="lane-head"><div><p className="eyebrow">LIVE GATE CONTROL</p><h2>Làn xe thời gian thực</h2><p>Chọn đúng camera cho khuôn mặt và biển số. Một điện thoại có thể dùng cho cả hai ô khi demo.</p></div><span className={liveCameraOn ? "live-badge active" : "live-badge"}><i />{liveCameraOn ? "CAMERA ONLINE" : "CAMERA OFFLINE"}</span></div><div className="live-feeds"><article><div className="feed-label">CAM 01 · KHUÔN MẶT</div><video ref={faceVideoRef} autoPlay muted playsInline /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Chưa kết nối camera"}</span></article><article><div className="feed-label">CAM 02 · BIỂN SỐ</div><video ref={plateVideoRef} autoPlay muted playsInline /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Chưa kết nối camera"}</span></article></div><div className="lane-actions"><label>Camera khuôn mặt<select value={faceDeviceId} onChange={e => setFaceDeviceId(e.target.value)}><option value="">Chọn camera</option>{cameraDevices.map(camera => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label><label>Camera biển số<select value={plateDeviceId} onChange={e => setPlateDeviceId(e.target.value)}><option value="">Dùng cùng camera khuôn mặt</option>{cameraDevices.map(camera => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label><label>Hướng làn xe<select value={direction} onChange={e => setDirection(e.target.value)}><option value="entry">Lối vào</option><option value="exit">Lối ra</option></select></label><div className="live-buttons"><button type="button" className="secondary" onClick={refreshCameraDevices}>Tải lại danh sách camera</button>{!liveCameraOn ? <button type="button" onClick={startLiveCamera}>Bật camera tại làn xe</button> : <><button type="button" onClick={toggleLiveScan}>{liveScanning ? "Tạm dừng quét" : "Bắt đầu quét tự động"}</button><button type="button" className="secondary" onClick={stopLiveCamera}>Dừng camera</button></>}</div></div><p className={`gate-decision ${liveResult.startsWith("✓") ? "allow" : liveResult.startsWith("✕") ? "block" : ""}`}>{liveResult}</p></section>
     <section className="grid"><div>
       <form onSubmit={verifyGate} className="scan-card"><div className="form-title"><span className="form-icon">⌁</span><div><h2>Quét kiểm soát cổng</h2><p>Không cần đăng ký trước: đối chiếu lượt vào và lượt ra của cùng xe.</p></div></div><div className="upload-grid"><label className="upload"><b>◎</b><span>Ảnh khuôn mặt</span><small>{faceImages.length ? `Đã chọn ${faceImages.length} ảnh` : "Chọn 1 hoặc nhiều ảnh rõ mặt"}</small><input type="file" accept="image/*" multiple onChange={e => setFaceImages(Array.from(e.target.files || []))} /></label><label className="upload"><b>▣</b><span>Ảnh xe & biển số</span><small>{vehicleImage?.name || "Chọn ảnh biển số"}</small><input type="file" accept="image/*" onChange={e => setVehicleImage(e.target.files?.[0] || null)} /></label></div><label>Thời điểm quét<select value={direction} onChange={e => setDirection(e.target.value)}><option value="entry">Xe vào cổng</option><option value="exit">Xe ra cổng</option></select></label><button>Quét và kiểm tra <span>→</span></button>{gateResult && <p className="result">{gateResult}</p>}</form>
     </div><section className="events"><div className="events-head"><div><p className="eyebrow">LỊCH SỬ HỆ THỐNG</p><h2>Nhật ký ra vào</h2></div><span>{events.length} lượt</span></div>{events.length === 0 ? <p>Chưa có lượt kiểm soát.</p> : events.map(e => <article key={e.id}><div><b>{e.plate_number || "Không đọc được biển số"}</b><small>{new Date(e.occurred_at).toLocaleString("vi-VN")}</small></div><span className={`tag ${e.decision}`}>{e.decision === "approved" ? "Được phép" : "Từ chối"}</span><p>{e.reason}</p></article>)}</section></section>
