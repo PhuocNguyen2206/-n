@@ -17,6 +17,7 @@ function App() {
   const [gateResult, setGateResult] = useState("");
   const faceVideoRef = useRef<HTMLVideoElement>(null);
   const faceOverlayRef = useRef<HTMLCanvasElement>(null);
+  const exitOverlayRef = useRef<HTMLCanvasElement>(null);
   const plateVideoRef = useRef<HTMLVideoElement>(null);
   const faceStreamRef = useRef<MediaStream | null>(null);
   const plateStreamRef = useRef<MediaStream | null>(null);
@@ -24,13 +25,14 @@ function App() {
   const scanTimerRef = useRef<number | null>(null);
   const faceTimerRef = useRef<number | null>(null);
   const faceScanningRef = useRef(false);
-  const snapshotUrlRef = useRef("");
-  const lastSnapshotAtRef = useRef(0);
+  const snapshotUrlRef = useRef({ entry: "", exit: "" });
+  const lastSnapshotAtRef = useRef({ entry: 0, exit: 0 });
   const [liveCameraOn, setLiveCameraOn] = useState(false);
   const [liveScanning, setLiveScanning] = useState(false);
   const [faceScanning, setFaceScanning] = useState(false);
   const [faceResult, setFaceResult] = useState("Chưa bắt đầu quét khuôn mặt.");
-  const [faceSnapshot, setFaceSnapshot] = useState("");
+  const [entrySnapshot, setEntrySnapshot] = useState("");
+  const [exitSnapshot, setExitSnapshot] = useState("");
   const [liveResult, setLiveResult] = useState("Sẵn sàng kết nối camera tại làn xe");
   const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
   const [faceDeviceId, setFaceDeviceId] = useState("");
@@ -87,8 +89,7 @@ function App() {
     finally { scanningRef.current = false; }
   };
 
-  const drawFaceBoxes = (result: { width: number; height: number; faces: Array<{ box: number[]; confidence: number }> }) => {
-    const video = faceVideoRef.current, canvas = faceOverlayRef.current;
+  const drawFaceBoxes = (video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null, result: { width: number; height: number; faces: Array<{ box: number[]; confidence: number }> }) => {
     if (!video || !canvas || !result.width || !result.height) return;
     canvas.width = video.clientWidth; canvas.height = video.clientHeight;
     const context = canvas.getContext("2d");
@@ -104,23 +105,34 @@ function App() {
     });
   };
 
-  const scanFaceOnly = async () => {
-    if (faceScanningRef.current || !faceVideoRef.current) return;
-    faceScanningRef.current = true;
+  const scanOneLaneFace = async (lane: "entry" | "exit", video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null) => {
+    if (!video) return false;
     try {
-      const frame = await frameFromVideo(faceVideoRef.current, "face-live.jpg");
+      const frame = await frameFromVideo(video, `${lane}-face-live.jpg`);
       const form = new FormData(); form.append("image", frame);
       const response = await fetch(`${API}/face/analyze`, { method: "POST", body: form });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Không thể quét khuôn mặt");
-      drawFaceBoxes(result);
-      if (result.faces.length && Date.now() - lastSnapshotAtRef.current > 2500) {
-        if (snapshotUrlRef.current) URL.revokeObjectURL(snapshotUrlRef.current);
-        snapshotUrlRef.current = URL.createObjectURL(frame); lastSnapshotAtRef.current = Date.now(); setFaceSnapshot(snapshotUrlRef.current);
+      drawFaceBoxes(video, canvas, result);
+      if (result.faces.length && Date.now() - lastSnapshotAtRef.current[lane] > 2500) {
+        if (snapshotUrlRef.current[lane]) URL.revokeObjectURL(snapshotUrlRef.current[lane]);
+        const url = URL.createObjectURL(frame); snapshotUrlRef.current[lane] = url; lastSnapshotAtRef.current[lane] = Date.now();
+        if (lane === "entry") setEntrySnapshot(url); else setExitSnapshot(url);
       }
-      setFaceResult(result.faces.length ? `✓ Đã phát hiện ${result.faces.length} khuôn mặt theo thời gian thực.` : "Chưa thấy khuôn mặt rõ. Hãy nhìn thẳng vào camera và tăng ánh sáng.");
-    } catch (error) { setFaceResult(error instanceof Error ? error.message : "Lỗi khi quét khuôn mặt"); }
-    finally { faceScanningRef.current = false; }
+      return result.faces.length > 0;
+    } catch { return false; }
+  };
+
+  const scanFaceOnly = async () => {
+    if (faceScanningRef.current) return;
+    faceScanningRef.current = true;
+    try {
+      const [entryDetected, exitDetected] = await Promise.all([
+        scanOneLaneFace("entry", faceVideoRef.current, faceOverlayRef.current),
+        scanOneLaneFace("exit", plateVideoRef.current, exitOverlayRef.current),
+      ]);
+      setFaceResult(entryDetected || exitDetected ? `✓ Đã phát hiện khuôn mặt: lối vào ${entryDetected ? "sẵn sàng" : "đang chờ"}, lối ra ${exitDetected ? "sẵn sàng" : "đang chờ"}.` : "Chưa thấy khuôn mặt rõ ở hai lối. Hãy nhìn thẳng vào camera và tăng ánh sáng.");
+    } finally { faceScanningRef.current = false; }
   };
 
   const startLiveCamera = async () => {
@@ -149,8 +161,8 @@ function App() {
     if (faceTimerRef.current) window.clearInterval(faceTimerRef.current);
     scanTimerRef.current = null; faceTimerRef.current = null; setLiveScanning(false); setFaceScanning(false);
     [...(faceStreamRef.current?.getTracks() || []), ...(plateStreamRef.current?.getTracks() || [])].forEach(track => track.stop());
-    if (snapshotUrlRef.current) URL.revokeObjectURL(snapshotUrlRef.current);
-    snapshotUrlRef.current = ""; setFaceSnapshot(""); faceStreamRef.current = null; plateStreamRef.current = null; setLiveCameraOn(false); setLiveResult("Đã dừng camera tại làn xe.");
+    Object.values(snapshotUrlRef.current).filter(Boolean).forEach(URL.revokeObjectURL);
+    snapshotUrlRef.current = { entry: "", exit: "" }; setEntrySnapshot(""); setExitSnapshot(""); faceStreamRef.current = null; plateStreamRef.current = null; setLiveCameraOn(false); setLiveResult("Đã dừng camera tại làn xe.");
   };
 
   const toggleLiveScan = () => {
@@ -178,7 +190,7 @@ function App() {
     <header><div className="brand"><div className="brand-mark">AI</div><div><p className="eyebrow">CỔNG KIỂM SOÁT THÔNG MINH</p><h1>Nhận diện AI</h1></div></div><span className="status"><i />{status}</span></header>
     <section className="hero"><div><p className="eyebrow">GIÁM SÁT RA VÀO</p><h2>Kiểm tra xe và khuôn mặt<br /><em>trong vài giây.</em></h2><p>Lúc vào, AI lưu biển số và khuôn mặt. Lúc ra, hệ thống đối chiếu với chính lượt xe đó.</p></div><div className="hero-shield">⌁<span>Protected</span></div></section>
     <section className="cards"><article><span className="card-icon blue">◷</span><div><strong>{events.length}</strong><span>Lượt kiểm soát gần đây</span></div></article><article><span className="card-icon green">✓</span><div><strong>{events.filter(e => e.decision === "approved").length}</strong><span>Được cho phép</span></div></article><article><span className="card-icon red">×</span><div><strong>{events.filter(e => e.decision !== "approved").length}</strong><span>Không cho phép</span></div></article></section>
-    <section className="lane-console"><div className="lane-head"><div><p className="eyebrow">AUTOMATED GATE CONTROL</p><h2>Làn xe tự động</h2><p>AI tự quét liên tục; bảo vệ chỉ dừng hoặc xử lý trường hợp bị từ chối.</p></div><span className={liveCameraOn ? "live-badge active" : "live-badge"}><i />{liveCameraOn ? "AUTOMATION ACTIVE" : "CAMERA OFFLINE"}</span></div><div className="live-feeds"><article><div className="feed-label">CAM 01 · KHUÔN MẶT · LIVE</div><video ref={faceVideoRef} autoPlay muted playsInline /><canvas className="face-overlay" ref={faceOverlayRef} /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Đang tự kết nối camera"}</span></article><article><div className="feed-label">CAM 02 · BIỂN SỐ · LIVE</div><video ref={plateVideoRef} autoPlay muted playsInline /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Đang tự kết nối camera"}</span></article></div>{faceSnapshot && <section className="face-result-card"><img src={faceSnapshot} alt="Khuôn mặt vừa quét thành công" /><div><p className="eyebrow">FACE DETECTION RESULT</p><h3>Khuôn mặt vừa quét thành công</h3><p>Ảnh này tự cập nhật khi AI phát hiện khuôn mặt rõ.</p></div><span>LIVE</span></section>}<div className="lane-actions"><label>Camera khuôn mặt<select value={faceDeviceId} onChange={e => setFaceDeviceId(e.target.value)}><option value="">Chọn camera</option>{cameraDevices.map(camera => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label><label>Camera biển số<select value={plateDeviceId} onChange={e => setPlateDeviceId(e.target.value)}><option value="">Dùng cùng camera khuôn mặt</option>{cameraDevices.map(camera => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label><label>Hướng làn xe<select value={direction} onChange={e => setDirection(e.target.value)}><option value="entry">Lối vào</option><option value="exit">Lối ra</option></select></label><div className="live-buttons"><button type="button" className="secondary" onClick={refreshCameraDevices}>Đổi camera</button>{!liveCameraOn ? <button type="button" onClick={startLiveCamera}>Khởi động lại làn tự động</button> : <><button type="button" className="face-scan-button" onClick={toggleFaceScan}>{faceScanning ? "Tạm dừng quét mặt" : "Tiếp tục quét mặt"}</button><button type="button" onClick={toggleLiveScan}>{liveScanning ? "Tạm dừng quét cổng" : "Tiếp tục quét cổng"}</button><button type="button" className="secondary" onClick={stopLiveCamera}>Dừng camera</button></>}</div></div><p className={`gate-decision ${faceResult.startsWith("✓") ? "allow" : ""}`}>{faceResult}</p><p className={`gate-decision ${liveResult.startsWith("✓") ? "allow" : liveResult.startsWith("✕") ? "block" : ""}`}>{liveResult}</p></section>
+    <section className="lane-console"><div className="lane-head"><div><p className="eyebrow">AUTOMATED PARKING CONSOLE</p><h2>Giám sát lối vào và lối ra</h2><p>Hai ô quét trực tiếp và hai ô ảnh kết quả, tự cập nhật theo thời gian thực.</p></div><span className={liveCameraOn ? "live-badge active" : "live-badge"}><i />{liveCameraOn ? "AUTOMATION ACTIVE" : "CAMERA OFFLINE"}</span></div><div className="parking-grid"><article className="live-tile"><div className="feed-label">LỐI VÀO · ĐANG QUÉT</div><video ref={faceVideoRef} autoPlay muted playsInline /><canvas className="face-overlay" ref={faceOverlayRef} /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Đang tự kết nối camera"}</span></article><article className="capture-tile">{entrySnapshot ? <img src={entrySnapshot} alt="Ảnh khuôn mặt tại lối vào" /> : <div className="capture-empty">⌁<span>Chờ ảnh nhận diện<br />lối vào</span></div>}<div className="capture-label">ẢNH QUÉT · LỐI VÀO</div></article><article className="live-tile"><div className="feed-label">LỐI RA · ĐANG QUÉT</div><video ref={plateVideoRef} autoPlay muted playsInline /><canvas className="face-overlay" ref={exitOverlayRef} /><span className="feed-empty">{liveCameraOn ? "Đang nhận hình ảnh" : "Đang tự kết nối camera"}</span></article><article className="capture-tile">{exitSnapshot ? <img src={exitSnapshot} alt="Ảnh khuôn mặt tại lối ra" /> : <div className="capture-empty">⌁<span>Chờ ảnh nhận diện<br />lối ra</span></div>}<div className="capture-label">ẢNH QUÉT · LỐI RA</div></article></div><div className="lane-actions"><label>Camera lối vào<select value={faceDeviceId} onChange={e => setFaceDeviceId(e.target.value)}><option value="">Chọn camera</option>{cameraDevices.map(camera => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label><label>Camera lối ra<select value={plateDeviceId} onChange={e => setPlateDeviceId(e.target.value)}><option value="">Dùng cùng camera lối vào</option>{cameraDevices.map(camera => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label><label>Hướng kiểm tra<select value={direction} onChange={e => setDirection(e.target.value)}><option value="entry">Lối vào</option><option value="exit">Lối ra</option></select></label><div className="live-buttons"><button type="button" className="secondary" onClick={refreshCameraDevices}>Đổi camera</button>{!liveCameraOn ? <button type="button" onClick={startLiveCamera}>Khởi động lại làn tự động</button> : <><button type="button" className="face-scan-button" onClick={toggleFaceScan}>{faceScanning ? "Tạm dừng quét mặt" : "Tiếp tục quét mặt"}</button><button type="button" onClick={toggleLiveScan}>{liveScanning ? "Tạm dừng quét cổng" : "Tiếp tục quét cổng"}</button><button type="button" className="secondary" onClick={stopLiveCamera}>Dừng camera</button></>}</div></div><p className={`gate-decision ${faceResult.startsWith("✓") ? "allow" : ""}`}>{faceResult}</p><p className={`gate-decision ${liveResult.startsWith("✓") ? "allow" : liveResult.startsWith("✕") ? "block" : ""}`}>{liveResult}</p></section>
     <section className="grid"><div>
       <form onSubmit={verifyGate} className="scan-card"><div className="form-title"><span className="form-icon">⌁</span><div><h2>Quét kiểm soát cổng</h2><p>Không cần đăng ký trước: đối chiếu lượt vào và lượt ra của cùng xe.</p></div></div><div className="upload-grid"><label className="upload"><b>◎</b><span>Ảnh khuôn mặt</span><small>{faceImages.length ? `Đã chọn ${faceImages.length} ảnh` : "Chọn 1 hoặc nhiều ảnh rõ mặt"}</small><input type="file" accept="image/*" multiple onChange={e => setFaceImages(Array.from(e.target.files || []))} /></label><label className="upload"><b>▣</b><span>Ảnh xe & biển số</span><small>{vehicleImage?.name || "Chọn ảnh biển số"}</small><input type="file" accept="image/*" onChange={e => setVehicleImage(e.target.files?.[0] || null)} /></label></div><label>Thời điểm quét<select value={direction} onChange={e => setDirection(e.target.value)}><option value="entry">Xe vào cổng</option><option value="exit">Xe ra cổng</option></select></label><button>Quét và kiểm tra <span>→</span></button>{gateResult && <p className="result">{gateResult}</p>}</form>
     </div><section className="events"><div className="events-head"><div><p className="eyebrow">LỊCH SỬ HỆ THỐNG</p><h2>Nhật ký ra vào</h2></div><span>{events.length} lượt</span></div>{events.length === 0 ? <p>Chưa có lượt kiểm soát.</p> : events.map(e => <article key={e.id}><div><b>{e.plate_number || "Không đọc được biển số"}</b><small>{new Date(e.occurred_at).toLocaleString("vi-VN")}</small></div><span className={`tag ${e.decision}`}>{e.decision === "approved" ? "Được phép" : "Từ chối"}</span><p>{e.reason}</p></article>)}</section></section>
