@@ -4,13 +4,13 @@ Sản phẩm đồ án kiểm soát phương tiện tại cổng trường bằn
 
 ## Chức năng đã có
 
-- Đăng ký chủ xe, biển số và mẫu khuôn mặt.
 - Quét riêng ảnh khuôn mặt và ảnh xe/biển số, phù hợp mô phỏng hai camera.
 - Màn hình làn xe thời gian thực: mở hai luồng camera, quét tự động mỗi 3 giây và hiển thị quyết định cho phép/từ chối tại chỗ.
 - YOLOv8 phát hiện xe/người; EasyOCR đọc ký tự biển số; FaceNet tạo đặc trưng khuôn mặt trên CPU.
-- Cơ chế fail-closed: chỉ `approved` khi biển số thuộc xe đã đăng ký và khuôn mặt hợp lệ. Mọi trường hợp khác bị từ chối và ghi nhật ký.
-- Phiên gửi xe: khi xe vào, hệ thống ghi nhận chủ xe và những người đi cùng đã đăng ký; lúc xe ra, một trong những người đó điều khiển xe vẫn hợp lệ.
-- Dashboard cho bảo vệ: thống kê, danh sách chủ xe, trạng thái khuôn mặt, nhật ký vào/ra và lý do từ chối.
+- Không cần đăng ký trước: lúc xe vào, hệ thống lưu biển số và các khuôn mặt xuất hiện trong lượt xe.
+- Cơ chế fail-closed: lúc xe ra chỉ `approved` khi biển số có lượt vào đang mở và khuôn mặt khớp với một người được ghi nhận trong lượt vào đó. Mọi trường hợp khác bị từ chối và ghi nhật ký.
+- Phiên gửi xe: nếu có nhiều người cùng đi vào xe, chỉ cần một trong các khuôn mặt đó xuất hiện lúc ra là hợp lệ.
+- Dashboard cho bảo vệ: thống kê, luồng camera thời gian thực, nhật ký vào/ra và lý do từ chối.
 - API REST có Swagger để tích hợp camera thực tế: `http://localhost:8000/docs`.
 
 ## Chạy sản phẩm
@@ -27,8 +27,7 @@ Khi phát triển cục bộ, chạy API từ `backend` và frontend từ `front
 
 ## Luồng demo
 
-1. Đăng ký một chủ xe với ảnh chân dung rõ và biển số.
-2. Khi xe vào có nhiều người, chọn nhiều ảnh khuôn mặt và một ảnh biển số; tất cả người đã đăng ký được ghi vào phiên gửi xe.
+1. Khi xe vào có nhiều người, chọn nhiều ảnh khuôn mặt và một ảnh biển số; tất cả khuôn mặt được ghi vào phiên gửi xe tạm thời.
 3. Ở `Quét kiểm soát cổng`, chọn ảnh khuôn mặt và ảnh biển số, rồi chọn xe vào hoặc xe ra.
 4. Xem quyết định và chi tiết trong `Nhật ký ra vào`.
 
