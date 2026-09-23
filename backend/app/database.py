@@ -70,9 +70,18 @@ def initialize_database() -> None:
               embedding TEXT NOT NULL,
               confidence REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS training_samples (
+              id TEXT PRIMARY KEY,
+              image_path TEXT NOT NULL,
+              plate_label TEXT,
+              status TEXT NOT NULL DEFAULT 'unlabeled',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_access_events_plate ON access_events(plate_number);
             CREATE INDEX IF NOT EXISTS idx_vehicle_sessions_vehicle ON vehicle_sessions(vehicle_id, status);
             CREATE INDEX IF NOT EXISTS idx_gate_sessions_plate ON gate_sessions(plate_number, status);
+            CREATE INDEX IF NOT EXISTS idx_training_samples_status ON training_samples(status);
             """
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(people)")}

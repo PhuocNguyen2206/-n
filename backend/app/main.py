@@ -16,6 +16,9 @@ app = FastAPI(title="Vehicle AI Gateway", version="0.1.0")
 EVIDENCE_DIRECTORY = Path("data/evidence")
 EVIDENCE_DIRECTORY.mkdir(parents=True, exist_ok=True)
 app.mount("/evidence", StaticFiles(directory=str(EVIDENCE_DIRECTORY)), name="evidence")
+TRAINING_DIRECTORY = Path("data/training_samples")
+TRAINING_DIRECTORY.mkdir(parents=True, exist_ok=True)
+app.mount("/training-data", StaticFiles(directory=str(TRAINING_DIRECTORY)), name="training-data")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -215,3 +218,68 @@ def recent_gate_sessions(limit: int = 6) -> list[dict]:
             session["exit_evidence_url"] = f"/evidence/{session['exit_evidence_path']}" if session["exit_evidence_path"] else None
             sessions.append(session)
         return sessions
+
+
+@app.get("/api/v1/dataset/samples")
+def list_training_samples(limit: int = 60) -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM training_samples ORDER BY created_at DESC LIMIT ?", (min(limit, 100),)
+        ).fetchall()
+        return [{**dict(row), "image_url": f"/training-data/{row['image_path']}"} for row in rows]
+
+
+@app.post("/api/v1/dataset/samples")
+async def add_training_sample(image: UploadFile = File(...), plate_label: str = Form("")) -> dict:
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+    suffix = Path(image.filename or "sample.jpg").suffix.lower() or ".jpg"
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        suffix = ".jpg"
+    sample_id = str(uuid4())
+    filename = f"{sample_id}{suffix}"
+    (TRAINING_DIRECTORY / filename).write_bytes(await image.read())
+    cleaned_label = plate_label.strip().upper()
+    now = datetime.now(timezone.utc).isoformat()
+    status = "labeled" if cleaned_label else "unlabeled"
+    with get_connection() as connection:
+        connection.execute(
+            "INSERT INTO training_samples (id, image_path, plate_label, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (sample_id, filename, cleaned_label or None, status, now, now),
+        )
+    return {"id": sample_id, "image_url": f"/training-data/{filename}", "plate_label": cleaned_label or None, "status": status}
+
+
+@app.patch("/api/v1/dataset/samples/{sample_id}")
+async def label_training_sample(sample_id: str, plate_label: str = Form(...)) -> dict:
+    cleaned_label = plate_label.strip().upper()
+    if not cleaned_label:
+        raise HTTPException(422, "Hãy nhập biển số để gán nhãn")
+    with get_connection() as connection:
+        result = connection.execute(
+            "UPDATE training_samples SET plate_label = ?, status = 'labeled', updated_at = ? WHERE id = ?",
+            (cleaned_label, datetime.now(timezone.utc).isoformat(), sample_id),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "Không tìm thấy ảnh dữ liệu")
+    return {"id": sample_id, "plate_label": cleaned_label, "status": "labeled"}
+
+
+@app.get("/api/v1/model/status")
+def model_status() -> dict:
+    with get_connection() as connection:
+        dataset = connection.execute(
+            "SELECT COUNT(*) AS total, SUM(status = 'labeled') AS labeled FROM training_samples"
+        ).fetchone()
+        latest_event = connection.execute(
+            "SELECT plate_confidence, face_confidence, occurred_at FROM access_events ORDER BY occurred_at DESC LIMIT 1"
+        ).fetchone()
+    custom_model = Path("models/license_plate.pt").is_file()
+    return {
+        "model_name": "license_plate.pt" if custom_model else "yolov8n.pt (mô hình tổng quát)",
+        "custom_plate_model": custom_model,
+        "dataset_total": dataset["total"] or 0,
+        "dataset_labeled": dataset["labeled"] or 0,
+        "evaluation": {"precision": None, "recall": None, "map50": None},
+        "latest_confidence": dict(latest_event) if latest_event else None,
+    }
