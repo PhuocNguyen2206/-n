@@ -6,5 +6,11 @@ frontend/dist/
 frontend/*.tsbuildinfo
 backend/models/*.pt
 backend/yolov8n.pt
+backend/runs/
+backend/data/model_metrics.json
+backend/datasets/license_plate_vn/images/**/*
+backend/datasets/license_plate_vn/labels/**/*
+!backend/datasets/license_plate_vn/images/**/*.gitkeep
+!backend/datasets/license_plate_vn/labels/**/*.gitkeep
 __pycache__/
 *.pyc

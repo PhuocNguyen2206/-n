@@ -275,11 +275,20 @@ def model_status() -> dict:
             "SELECT plate_confidence, face_confidence, occurred_at FROM access_events ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
     custom_model = Path("models/license_plate.pt").is_file()
+    metrics_path = Path("data/model_metrics.json")
+    try:
+        evaluation = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        evaluation = {}
     return {
         "model_name": "license_plate.pt" if custom_model else "yolov8n.pt (mô hình tổng quát)",
         "custom_plate_model": custom_model,
         "dataset_total": dataset["total"] or 0,
         "dataset_labeled": dataset["labeled"] or 0,
-        "evaluation": {"precision": None, "recall": None, "map50": None},
+        "evaluation": {
+            "precision": evaluation.get("precision"),
+            "recall": evaluation.get("recall"),
+            "map50": evaluation.get("map50"),
+        },
         "latest_confidence": dict(latest_event) if latest_event else None,
     }
