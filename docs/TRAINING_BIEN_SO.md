@@ -12,16 +12,24 @@
 
 ## Chuẩn bị data
 
-1. Thu ảnh được phép sử dụng từ camera: biển số rõ, nhiều góc, ngày/đêm và có xe máy/ô tô.
-2. Mở LabelImg cho từng thư mục ảnh, chọn định dạng **YOLO**, rồi vẽ một khung cho mỗi vùng biển số. Tên lớp duy nhất là `license_plate` (id `0`).
+1. Thu ảnh/video được phép sử dụng từ camera: biển số rõ, nhiều góc, ngày/đêm và có xe máy/ô tô. Chép trực tiếp mọi tệp vào `backend/datasets/raw_media/`.
+2. Chạy bước chuẩn bị để trích một khung hình mỗi 2 giây video và tự gợi ý nhãn bằng `plate_best.pt`:
+
+```powershell
+& ".\backend\.venv\Scripts\python.exe" ".\backend\training\prepare_media_dataset.py"
+```
+
+Có thể lấy khung dày hơn bằng cách thêm `--video-step 1`.
+
+3. Mở LabelImg cho từng thư mục ảnh, chọn định dạng **YOLO**, rồi kiểm tra/chỉnh khung cho mỗi vùng biển số. Tên lớp duy nhất là `license_plate` (id `0`).
 
 ```powershell
 & ".\backend\.venv\Scripts\labelImg.exe" ".\backend\datasets\license_plate_vn\images\train" ".\backend\datasets\license_plate_vn\labels\train"
 ```
 
-3. Lặp lại cho `val` và `test`. Ảnh và tệp `.txt` nhãn phải cùng tên.
-4. Chia dữ liệu gợi ý: train 70%, val 20%, test 10%.
-5. Đặt ảnh và tệp `.txt` cùng tên theo cấu trúc trong `backend/datasets/license_plate_vn/README.md`.
+4. Lặp lại cho `val` và `test`. Ảnh và tệp `.txt` nhãn phải cùng tên.
+5. Script đã tự chia xấp xỉ: train 70%, val 20%, test 10%.
+6. Đặt ảnh và tệp `.txt` cùng tên theo cấu trúc trong `backend/datasets/license_plate_vn/README.md`.
 
 ## Chạy trước khi train
 
