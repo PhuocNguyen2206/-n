@@ -104,7 +104,11 @@ def main() -> None:
             for index, frame in frames_from_video(path, args.video_step):
                 save_frame(model, frame, f"{path.relative_to(RAW_DIRECTORY)}:{index}", args.confidence, report)
     report_path = BACKEND_DIRECTORY / "data" / "dataset_import_report.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        # Báo cáo là tiện ích phụ; không để quyền ghi tệp làm dừng dataset đã tạo.
+        pass
     total = sum(report["saved"].values())
     print(f"Đã tạo {total} ảnh có nhãn gợi ý. train={report['saved']['train']}, val={report['saved']['val']}, test={report['saved']['test']}")
     print("Mở LabelImg để kiểm tra/chỉnh các khung nhãn trước khi train.")
