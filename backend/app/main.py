@@ -274,14 +274,23 @@ def model_status() -> dict:
         latest_event = connection.execute(
             "SELECT plate_confidence, face_confidence, occurred_at FROM access_events ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
-    custom_model = Path("models/license_plate.pt").is_file()
+    detector_model = Path("models/plate_best.pt")
+    character_model = Path("models/chars_best.pt")
+    trained_model = Path("models/license_plate.pt")
+    custom_model = detector_model.is_file() or trained_model.is_file()
+    if detector_model.is_file() and character_model.is_file():
+        model_name = "plate_best.pt + chars_best.pt (đọc biển số 2 tầng)"
+    elif trained_model.is_file():
+        model_name = "license_plate.pt"
+    else:
+        model_name = "yolov8n.pt (mô hình tổng quát)"
     metrics_path = Path("data/model_metrics.json")
     try:
         evaluation = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else {}
     except (OSError, json.JSONDecodeError):
         evaluation = {}
     return {
-        "model_name": "license_plate.pt" if custom_model else "yolov8n.pt (mô hình tổng quát)",
+        "model_name": model_name,
         "custom_plate_model": custom_model,
         "dataset_total": dataset["total"] or 0,
         "dataset_labeled": dataset["labeled"] or 0,
