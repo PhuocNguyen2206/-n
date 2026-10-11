@@ -15,5 +15,6 @@ backend/datasets/license_plate_vn/labels/**/*
 backend/datasets/raw_media/*
 !backend/datasets/raw_media/.gitkeep
 backend/data/dataset_import_report.json
+.dataset-import/
 __pycache__/
 *.pyc

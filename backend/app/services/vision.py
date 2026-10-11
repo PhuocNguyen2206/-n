@@ -42,7 +42,9 @@ class VisionService:
         detector_override = Path(os.getenv("YOLO_MODEL_PATH", "models/license_plate.pt"))
         detector_override = detector_override if detector_override.is_absolute() else backend_directory / detector_override
         shared_detector = models_directory / "plate_best.pt"
-        self.detector_path = next((path for path in (shared_detector, detector_override) if path.is_file()), backend_directory / "yolov8n.pt")
+        # Prefer the model trained by this project when it is available.  The
+        # imported two-stage model remains the automatic fallback.
+        self.detector_path = next((path for path in (detector_override, shared_detector) if path.is_file()), backend_directory / "yolov8n.pt")
         self.uses_plate_model = self.detector_path.name in {"plate_best.pt", "license_plate.pt"}
         self.model = YOLO(str(self.detector_path))
 

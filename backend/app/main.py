@@ -278,10 +278,12 @@ def model_status() -> dict:
     character_model = Path("models/chars_best.pt")
     trained_model = Path("models/license_plate.pt")
     custom_model = detector_model.is_file() or trained_model.is_file()
-    if detector_model.is_file() and character_model.is_file():
-        model_name = "plate_best.pt + chars_best.pt (đọc biển số 2 tầng)"
+    if trained_model.is_file() and character_model.is_file():
+        model_name = "license_plate.pt + chars_best.pt (detector đã train)"
     elif trained_model.is_file():
-        model_name = "license_plate.pt"
+        model_name = "license_plate.pt (detector đã train)"
+    elif detector_model.is_file() and character_model.is_file():
+        model_name = "plate_best.pt + chars_best.pt (đọc biển số 2 tầng)"
     else:
         model_name = "yolov8n.pt (mô hình tổng quát)"
     metrics_path = Path("data/model_metrics.json")

@@ -29,12 +29,31 @@ def main() -> None:
     parser.add_argument("--device", default="0", help="0 dùng RTX 3050; dùng cpu nếu cần")
     args = parser.parse_args()
 
+    dataset_directory = args.data.resolve().parent
+    if not (dataset_directory / "images" / "train").is_dir():
+        raise SystemExit(f"Không tìm thấy dataset chuẩn tại {dataset_directory}")
+    # Ultralytics đôi khi diễn giải `path: .` theo thư mục chạy trên Windows.
+    # Tạo YAML tạm với đường dẫn tuyệt đối để train ổn định dù project có tên tiếng Việt.
+    runtime_data = Path(tempfile.gettempdir()) / "nhan_dien_ai_license_plate_data.yaml"
+    runtime_data.write_text(
+        "\n".join([
+            f'path: "{dataset_directory.as_posix()}"',
+            "train: images/train",
+            "val: images/val",
+            "test: images/test",
+            "names:",
+            "  0: license_plate",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
     source_model = BACKEND_DIRECTORY / "yolov8n.pt"
     if not source_model.is_file():
         raise SystemExit("Thiếu backend/yolov8n.pt. Khởi động API một lần hoặc đặt model vào đây.")
     model = YOLO(str(source_model))
     run = model.train(
-        data=str(args.data), epochs=args.epochs, imgsz=args.imgsz, batch=args.batch,
+        data=str(runtime_data), epochs=args.epochs, imgsz=args.imgsz, batch=args.batch,
         device=args.device, project=str(BACKEND_DIRECTORY / "runs"), name="license_plate", exist_ok=True,
     )
     best_model = BACKEND_DIRECTORY / "runs" / "license_plate" / "weights" / "best.pt"
@@ -44,7 +63,7 @@ def main() -> None:
     models_directory.mkdir(exist_ok=True)
     shutil.copy2(best_model, models_directory / "license_plate.pt")
 
-    metrics = model.val(data=str(args.data), imgsz=args.imgsz, device=args.device)
+    metrics = model.val(data=str(runtime_data), imgsz=args.imgsz, device=args.device)
     result = metrics.results_dict
     report = {
         "precision": result.get("metrics/precision(B)"),
