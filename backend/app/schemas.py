@@ -33,3 +33,12 @@ class RecognitionResult(BaseModel):
     face_detected: bool = False
     face_detection_confidence: float | None = None
     face_similarity: float | None = None
+
+
+class ManualGateEventRequest(BaseModel):
+    """Một lượt qua cổng không dùng AI nhưng vẫn phải có nhật ký."""
+
+    direction: Literal["entry", "exit"] = "entry"
+    exception_type: Literal["pedestrian", "emergency", "camera_failure", "security_override"]
+    operator_name: str = Field(default="Bảo vệ cổng", min_length=2, max_length=120)
+    note: str | None = Field(default=None, max_length=300)

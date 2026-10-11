@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import get_connection, initialize_database
-from .schemas import RecognitionResult
+from .schemas import ManualGateEventRequest, RecognitionResult
 from .services.vision import VisionService
 from .services.face import FaceService
 
@@ -91,6 +91,36 @@ async def analyze_face(image: UploadFile = File(...)) -> dict:
         return get_face_service().detect(await image.read())
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+
+
+@app.post("/api/v1/gate/manual", response_model=RecognitionResult)
+def record_manual_gate_event(request: ManualGateEventRequest) -> RecognitionResult:
+    """Ghi nhận ngoại lệ khi cổng không áp dụng quét AI.
+
+    Đây không phải là "bỏ qua" kiểm soát: bảo vệ vẫn phải chọn lý do, xác
+    nhận người xử lý và để lại ghi chú để truy vết trong nhật ký.
+    """
+    exception_labels = {
+        "pedestrian": "Người đi bộ (không thuộc phạm vi kiểm soát xe)",
+        "emergency": "Xe ưu tiên hoặc tình huống khẩn cấp",
+        "camera_failure": "Camera hoặc kết nối AI gặp sự cố",
+        "security_override": "Bảo vệ xác nhận thủ công",
+    }
+    event_id = str(uuid4())
+    note = request.note.strip() if request.note else "Không có ghi chú thêm"
+    reason = f"[XỬ LÝ THỦ CÔNG] {exception_labels[request.exception_type]} · Bảo vệ: {request.operator_name.strip()} · {note}"
+    with get_connection() as connection:
+        connection.execute(
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, datetime.now(timezone.utc).isoformat(), request.direction, None, None, "manual_review", reason, None, None, None),
+        )
+    return RecognitionResult(
+        event_id=event_id,
+        decision="manual_review",
+        reason=reason,
+        plate_number=None,
+        face_detected=False,
+    )
 
 
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)

@@ -31,6 +31,10 @@ Khi phát triển cục bộ, chạy API từ `backend` và frontend từ `front
 3. Ở `Quét kiểm soát cổng`, chọn ảnh khuôn mặt và ảnh biển số, rồi chọn xe vào hoặc xe ra.
 4. Xem quyết định và chi tiết trong `Nhật ký ra vào`.
 
+## Xử lý ngoại lệ không quét AI
+
+Ở mục **Xử lý ngoại lệ**, bảo vệ có thể ghi nhận một lượt không dùng AI trong bốn trường hợp: người đi bộ, xe ưu tiên/tình huống khẩn cấp, camera hoặc kết nối gặp sự cố, và bảo vệ xác nhận thủ công. Hệ thống vẫn bắt buộc lưu hướng di chuyển, lý do, người xử lý, ghi chú và thời gian vào nhật ký; ngoại lệ không được tính là lượt AI từ chối.
+
 ## Camera thực tế
 
 Mục `Làn xe thời gian thực` dùng camera được trình duyệt cấp quyền. Bấm `Bật camera tại làn xe`, chọn lối vào hoặc lối ra rồi bấm `Bắt đầu quét tự động`. Khi triển khai tương tự cổng thương mại, thay camera trình duyệt bằng hai camera IP/RTSP (một camera góc mặt, một camera góc biển số) và kết nối đầu ra relay/barrier với quyết định `approved` của API.
