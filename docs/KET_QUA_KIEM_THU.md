@@ -49,3 +49,9 @@ Frontend build thành công. Kiểm tra trình duyệt xác nhận hai ô Camera
 Đã chạy giao diện riêng trên cổng 5175 cùng API cổng 8011, SQLite và ảnh tổng hợp trong thư mục tạm. Trên trình duyệt đã nhập thông tin người xử lý, tích xác nhận, bấm nút cho xe ra và quan sát trạng thái **MỞ — BẢO VỆ XÁC NHẬN** cùng ảnh đã lưu. API trả HTTP 200. Hai máy chủ kiểm thử được tắt sau kiểm tra; dữ liệu vận hành không bị thêm lượt thử. Frontend build thành công.
 
 Đây là kiểm thử luồng bằng AI giả lập không trả khuôn mặt, không phải thử khẩu trang trên người thật hoặc điều khiển thanh chắn IoT. Tên người xác nhận chưa gắn với tài khoản đăng nhập.
+
+## Cập nhật tra cứu ảnh theo lượt — 12/11/2026
+
+**22/22 bài kiểm thử API đạt** (unittest 0,257 giây, không tính import). Thêm kiểm tra truy vấn 45 sự kiện qua ba trang không trùng/thiếu; mỗi sự kiện trả đúng URL ảnh và ảnh mở được; lọc biển số bỏ dấu phân cách và khoảng thời gian múi giờ +07 trước khi phân trang; chặn khoảng thời gian/phân trang không hợp lệ. Dữ liệu đều tổng hợp, SQLite và ảnh nằm trong thư mục tạm.
+
+Đã dùng trình duyệt ở cổng kiểm thử 5175: mở Nhật ký, nhập biển số, bấm dòng xe ra và quan sát hộp chi tiết có mã lượt/URL ảnh kết thúc `_exit.jpg` đúng sự kiện đã chọn. Frontend build thành công. Tắt máy chủ kiểm thử sau kiểm tra; không thêm dữ liệu vào nhật ký vận hành.

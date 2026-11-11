@@ -59,7 +59,7 @@ Các chỉ tiêu có thể báo cáo từ dữ liệu thực:
 - Model biển số riêng trên Windows chưa được xác minh trên Mac trong các lần kiểm thử đã ghi nhận.
 - Chưa đánh giá ánh sáng yếu, góc nghiêng, tốc độ xe, nhiều xe chung khung hình và chống giả mạo bằng ảnh/video.
 - Chưa có phân quyền/xác thực, chính sách tự xóa ảnh hoặc tích hợp barrier phần cứng.
-- Nhật ký và biểu đồ dùng danh sách sự kiện gần đây, chưa phải báo cáo toàn bộ dữ liệu.
+- Biểu đồ dùng danh sách sự kiện gần đây, chưa phải báo cáo toàn bộ dữ liệu. Trang Nhật ký đã tìm trên toàn bộ SQLite với phân trang 20 lượt.
 - Hai webcam hiện tách vai trò mặt/biển số cho một hướng kiểm tra tại một thời điểm; muốn chạy hai làn đồng thời cần mở rộng thành bốn camera.
 
 ## Hồ sơ nên mang khi bảo vệ

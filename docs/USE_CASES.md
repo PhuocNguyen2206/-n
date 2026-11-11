@@ -39,7 +39,7 @@ Bảo vệ tìm camera, chọn hai webcam khác nhau theo vai trò mặt/biển 
 
 ## UC-04 — Tra cứu nhật ký
 
-Bảo vệ chọn khoảng thời gian, đọc biển số, hướng di chuyển, quyết định và lý do; bấm ảnh thu nhỏ để mở bằng chứng. Giới hạn hiện tại: API trả mặc định 20 lượt gần nhất, giao diện hiển thị tối đa 6 lượt phù hợp. Bộ lọc áp dụng trên dữ liệu đã tải, chưa phải truy vấn toàn bộ lịch sử.
+Bảo vệ chọn khoảng thời gian, đọc biển số, hướng di chuyển, quyết định và lý do; bấm ảnh thu nhỏ để mở bằng chứng. Trang Nhật ký truy vấn toàn bộ SQLite theo biển số và khoảng thời gian, phân trang 20 lượt. Màn hình Tổng quan chỉ hiện 6 lượt gần nhất. Bấm dòng nhật ký mở đúng ảnh theo mã sự kiện, kèm biển số, hướng, thời gian, kết quả và lý do; nếu ảnh không được lưu hoặc đã mất, giao diện thông báo thay vì hiện ảnh của lượt khác.
 
 ## UC-05 — Đối chiếu và xem lưu lượng
 

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -299,6 +299,36 @@ def dashboard_summary() -> dict:
             "approved": totals["approved"] or 0,
             "denied": totals["denied"] or 0,
         }
+
+
+@app.get("/api/v1/events/search")
+def search_events(
+    plate: str = Query("", max_length=30),
+    start: datetime | None = None, end: datetime | None = None,
+    limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+) -> dict:
+    for value in (start, end):
+        if value is not None and value.utcoffset() is None:
+            raise HTTPException(422, "Thời gian phải có múi giờ")
+    if start and end and start > end:
+        raise HTTPException(422, "Thời gian bắt đầu phải trước thời gian kết thúc")
+    conditions, values = [], []
+    normalized = "".join(character for character in plate.upper() if character.isalnum())
+    if normalized:
+        conditions.append("instr(UPPER(REPLACE(REPLACE(REPLACE(COALESCE(plate_number, ''), '-', ''), '.', ''), ' ', '')), ?) > 0")
+        values.append(normalized)
+    if start:
+        conditions.append("julianday(occurred_at) >= julianday(?)")
+        values.append(start.astimezone(timezone.utc).isoformat())
+    if end:
+        conditions.append("julianday(occurred_at) <= julianday(?)")
+        values.append(end.astimezone(timezone.utc).isoformat())
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    with get_connection() as connection:
+        total = connection.execute("SELECT COUNT(*) FROM access_events" + where, values).fetchone()[0]
+        rows = connection.execute("SELECT * FROM access_events" + where + " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
+        items = [dict(row) | {"evidence_url": f"/evidence/{row['evidence_path']}" if row["evidence_path"] else None} for row in rows]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/v1/events")

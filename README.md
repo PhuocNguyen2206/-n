@@ -103,3 +103,7 @@ Ngay cạnh camera, bảo vệ xem ảnh lúc vào/ra, nhập tên và lý do, �
 Thanh chắn trên web chỉ mô phỏng trạng thái; nút Đóng mô phỏng chỉ đổi hiển thị, không hoàn tác phiên đã đóng. Không có lệnh điều khiển thiết bị thật. Đeo khẩu trang không nhất thiết làm nhận diện thất bại: hệ thống hiện chưa có bộ phát hiện khẩu trang riêng. Nếu không đọc được biển số hoặc không có phiên vào, không cung cấp nút duyệt ra cho một phiên chưa xác định.
 
 Tên bảo vệ đang do người dùng nhập, chưa phải danh tính được xác thực. Bản này phục vụ demo cục bộ, chưa có phân quyền để vận hành tại cổng thật.
+
+## Tìm lại đúng ảnh của lượt xe
+
+Mở **Nhật ký**, tìm theo biển số và/hoặc khoảng thời gian, chuyển trang nếu cần (20 lượt/trang). Bấm bất kỳ dòng nào để xem ảnh của chính mã lượt đó cùng thời gian, hướng và quyết định; không cần tìm tên tệp trong thư mục. **Mở ảnh gốc** mở tệp bằng chứng. Nếu lượt không có ảnh hoặc tệp đã mất, giao diện sẽ báo rõ. Tổng quan chỉ hiển thị 6 lượt gần nhất và có nút vào toàn bộ nhật ký.
