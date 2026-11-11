@@ -18,3 +18,8 @@ backend/data/dataset_import_report.json
 .dataset-import/
 __pycache__/
 *.pyc
+.tools/
+.DS_Store
+
+backend/data/evidence/
+backend/tests/

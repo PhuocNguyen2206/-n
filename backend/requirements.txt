@@ -4,12 +4,13 @@ pydantic==2.10.4
 httpx==0.28.1
 python-multipart==0.0.20
 ultralytics==8.3.0
-torch==2.5.1+cpu
-torchvision==0.20.1+cpu
+torch==2.2.2
+torchvision==0.17.2
 easyocr==1.7.2
 facenet-pytorch==2.6.0
 numpy==1.26.4
 Pillow==10.2.0
 opencv-python-headless==4.10.0.84
+opencv-python==4.10.0.84
 # Công cụ desktop để gắn nhãn bounding box theo định dạng YOLO.
 labelImg==1.8.6

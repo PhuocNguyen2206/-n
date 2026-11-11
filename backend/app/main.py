@@ -1,4 +1,7 @@
 import json
+from io import BytesIO
+
+from PIL import Image
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -8,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import get_connection, initialize_database
-from .schemas import ManualGateEventRequest, RecognitionResult
+from .schemas import ExitReviewResolution, ManualGateEventRequest, RecognitionResult
 from .services.vision import VisionService
 from .services.face import FaceService
 
@@ -53,10 +56,25 @@ def get_face_service() -> FaceService:
     return face_service
 
 
-def save_evidence(event_id: str, direction: str, image_data: bytes) -> str:
-    """Lưu ảnh bằng chứng cục bộ, tách biệt với dữ liệu nhúng khuôn mặt."""
+def save_evidence(event_id: str, direction: str, frames: list[bytes]) -> str:
+    """Store one JPEG; paired inputs keep face (left) and plate (right)."""
     filename = f"{event_id}_{direction}.jpg"
-    (EVIDENCE_DIRECTORY / filename).write_bytes(image_data)
+    if len(frames) == 1:
+        with Image.open(BytesIO(frames[0])) as image:
+            image.convert("RGB").save(EVIDENCE_DIRECTORY / filename, format="JPEG", quality=90)
+    else:
+        images = []
+        for frame in frames:
+            with Image.open(BytesIO(frame)) as image:
+                tile = image.convert("RGB")
+                tile.thumbnail((1280, 720))
+                images.append(tile)
+        evidence = Image.new("RGB", (sum(image.width for image in images), max(image.height for image in images)), "black")
+        offset = 0
+        for image in images:
+            evidence.paste(image, (offset, 0))
+            offset += image.width
+        evidence.save(EVIDENCE_DIRECTORY / filename, format="JPEG", quality=90)
     return filename
 
 
@@ -123,34 +141,98 @@ def record_manual_gate_event(request: ManualGateEventRequest) -> RecognitionResu
     )
 
 
+def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes]) -> RecognitionResult | None:
+    """A review belongs to one open session, with immutable scan evidence."""
+    session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+    if session is None:
+        return None
+    pending = connection.execute("SELECT r.id AS review_id, e.* FROM exit_reviews r JOIN access_events e ON e.id = r.event_id WHERE r.session_id = ? AND r.status = 'pending' LIMIT 1", (session["id"],)).fetchone()
+    if pending:
+        event_id, review_id, evidence_path, occurred_at = pending["id"], pending["review_id"], pending["evidence_path"], pending["occurred_at"]
+        reason = pending["reason"]
+    else:
+        event_id, review_id = str(uuid4()), str(uuid4())
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        evidence_path = save_evidence(event_id, "exit", frames)
+        connection.execute("INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, evidence_path) VALUES (?, ?, 'exit', ?, 'manual_review', ?, ?)", (event_id, occurred_at, plate, reason, evidence_path))
+        connection.execute("INSERT INTO exit_reviews (id, session_id, event_id) VALUES (?, ?, ?)", (review_id, session["id"], event_id))
+    return RecognitionResult(event_id=event_id, review_id=review_id, decision="manual_review", reason=reason, plate_number=plate,
+        evidence_url=f"/evidence/{evidence_path}" if evidence_path else None, captured_at=occurred_at,
+        entry_evidence_url=f"/evidence/{session['entry_evidence_path']}" if session["entry_evidence_path"] else None, entered_at=session["entered_at"])
+
+
+@app.get("/api/v1/gate/exit-reviews/pending")
+def pending_exit_reviews() -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute("SELECT r.id AS review_id, e.id AS event_id, e.plate_number, e.reason, e.evidence_path, e.occurred_at AS captured_at, s.entry_evidence_path, s.entered_at FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.status = 'pending' AND s.status = 'open' ORDER BY e.occurred_at DESC LIMIT 20").fetchall()
+        return [dict(row) | {"evidence_url": f"/evidence/{row['evidence_path']}" if row["evidence_path"] else None, "entry_evidence_url": f"/evidence/{row['entry_evidence_path']}" if row["entry_evidence_path"] else None} for row in rows]
+
+
+@app.post("/api/v1/gate/exit-reviews/{review_id}/resolve", response_model=RecognitionResult)
+def resolve_exit_review(review_id: str, request: ExitReviewResolution) -> RecognitionResult:
+    with get_connection() as connection:
+        # Serialise approvals; a second click/client cannot close a different session.
+        connection.execute("BEGIN IMMEDIATE")
+        review = connection.execute("SELECT r.status AS review_status, r.session_id, e.*, s.status AS session_status FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.id = ?", (review_id,)).fetchone()
+        if review is None:
+            raise HTTPException(404, "Không tìm thấy yêu cầu xác nhận")
+        if review["review_status"] != "pending" or review["session_status"] != "open":
+            raise HTTPException(409, "Yêu cầu đã xử lý hoặc phiên xe đã đóng; hãy quét lại")
+        event_id, now = str(uuid4()), datetime.now(timezone.utc).isoformat()
+        approved = request.action == "approve"
+        decision = "manual_approved" if approved else "denied"
+        reason = f"[BẢO VỆ XÁC NHẬN] {'Cho xe ra' if approved else 'Không cho xe ra'} · Người xử lý: {request.operator_name} · Lý do: {request.reason} · AI: {review['reason']}"
+        connection.execute("INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, evidence_path) VALUES (?, ?, 'exit', ?, ?, ?, ?)", (event_id, now, review["plate_number"], decision, reason, review["evidence_path"]))
+        connection.execute("UPDATE exit_reviews SET status = ? WHERE id = ?", ("approved" if approved else "rejected", review_id))
+        if approved:
+            connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ? AND status = 'open'", (now, event_id, review["evidence_path"], review["session_id"]))
+        return RecognitionResult(event_id=event_id, decision=decision, reason=reason, plate_number=review["plate_number"], evidence_url=f"/evidence/{review['evidence_path']}" if review["evidence_path"] else None, captured_at=review["occurred_at"])
+
+
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
 async def verify_gate_image(
-    images: list[UploadFile] = File(...), direction: str = Form("exit"), automatic: bool = Form(False)
+    images: list[UploadFile] = File(...), direction: str = Form("exit"), automatic: bool = Form(False),
+    paired_cameras: bool = Form(False)
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
+    if paired_cameras and len(images) != 2:
+        raise HTTPException(422, "Cần hai ảnh theo thứ tự: khuôn mặt, biển số")
     plate, plate_confidence, faces, frames = None, 0.0, [], []
-    for image in images:
+    for index, image in enumerate(images):
         if not image.content_type or not image.content_type.startswith("image/"):
             raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
         image_data = await image.read()
         frames.append(image_data)
+        # Decode every input before saving, including a dedicated face frame.
         try:
-            analysis = get_vision_service().analyze_image(image_data)
-            if not plate and analysis.plate_text:
-                plate, plate_confidence = analysis.plate_text, analysis.plate_confidence or 0.0
-        except ValueError:
-            continue
-        try:
-            faces.extend(get_face_service().extract_all(image_data))
-        except ValueError:
-            pass
+            with Image.open(BytesIO(image_data)) as decoded:
+                decoded.verify()
+        except (OSError, ValueError) as error:
+            raise HTTPException(422, "Ảnh không hợp lệ hoặc không đọc được") from error
+        if not paired_cameras or index == 1:
+            try:
+                analysis = get_vision_service().analyze_image(image_data)
+                if not plate and analysis.plate_text:
+                    plate, plate_confidence = analysis.plate_text, analysis.plate_confidence or 0.0
+            except ValueError:
+                pass
+        if not paired_cameras or index == 0:
+            try:
+                faces.extend(get_face_service().extract_all(image_data))
+            except ValueError:
+                pass
     event_id = str(uuid4())
     decision, reason, score = "denied", "Không đọc được biển số xe", 0.0
     evidence_path = None
+    captured_at = datetime.now(timezone.utc).isoformat()
     with get_connection() as connection:
         # Camera tự động gửi nhiều khung hình. Khi khung chưa đủ dữ liệu, chỉ
         # báo trạng thái chờ thay vì ghi hàng loạt lỗi vào nhật ký bảo vệ.
+        if direction == "exit" and plate and not faces:
+            review = prepare_exit_review(connection, plate, "Không xác minh được khuôn mặt; cần bảo vệ kiểm tra trực tiếp", frames)
+            if review:
+                return review
         if automatic and (not plate or not faces):
             waiting_reason = "Đang chờ biển số xe rõ" if not plate else "Đang chờ khuôn mặt rõ"
             return RecognitionResult(
@@ -180,8 +262,12 @@ async def verify_gate_image(
                     decision, reason = "approved", "Khuôn mặt khớp với người đã vào cùng xe"
                 else:
                     reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào"
+        if direction == "exit" and plate and decision == "denied":
+            review = prepare_exit_review(connection, plate, reason, frames)
+            if review:
+                return review
         if plate and faces and frames:
-            evidence_path = save_evidence(event_id, direction, frames[0])
+            evidence_path = save_evidence(event_id, direction, frames)
         connection.execute(
             "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, None, decision, reason, plate_confidence, score, evidence_path),
@@ -195,6 +281,8 @@ async def verify_gate_image(
     return RecognitionResult(
         event_id=event_id, decision=decision, reason=reason,
         plate_number=plate, face_detected=bool(faces),
+        evidence_url=f"/evidence/{evidence_path}" if evidence_path else None,
+        captured_at=captured_at if evidence_path else None,
         face_detection_confidence=max((face.confidence for face in faces), default=None),
         face_similarity=score if plate else None,
     )

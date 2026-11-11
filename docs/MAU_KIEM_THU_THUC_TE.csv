@@ -1,0 +1,8 @@
+ma_ca,ngay_gio,dieu_kien,huong,bien_so_that,ma_nguoi,ket_qua_ky_vong,bien_so_doc_duoc,quyet_dinh_thuc_te,thoi_gian_phan_hoi_ms,tep_anh,ghi_chu
+TC01,,,entry,,A,approved,,,,,Xe chưa có phiên vào
+TC02,,,entry,,A,approved,,,,,Lặp lại xe đã vào; không tạo thêm ảnh hay nhật ký
+TC03,,,exit,,B,denied,,,,,Cùng biển số TC01 nhưng người khác
+TC04,,,exit,,A,approved,,,,,Cùng biển số và người TC01; đóng phiên
+TC05,,,exit,,C,denied,,,,,Xe chưa có lượt vào
+TC06,,,entry,,A,manual_review,,,,,Thiếu khuôn mặt rõ
+TC07,,,entry,,A,manual_review,,,,,Thiếu biển số rõ

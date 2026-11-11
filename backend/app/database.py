@@ -70,6 +70,12 @@ def initialize_database() -> None:
               embedding TEXT NOT NULL,
               confidence REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS exit_reviews (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL REFERENCES gate_sessions(id),
+              event_id TEXT NOT NULL REFERENCES access_events(id),
+              status TEXT NOT NULL DEFAULT 'pending'
+            );
             CREATE TABLE IF NOT EXISTS training_samples (
               id TEXT PRIMARY KEY,
               image_path TEXT NOT NULL,

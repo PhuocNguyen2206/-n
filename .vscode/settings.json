@@ -1,0 +1,8 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "terminal.integrated.env.osx": {
+    "PATH": "${workspaceFolder}/.tools/node-v22.23.5-darwin-arm64/bin:${workspaceFolder}/.tools/bin:${env:PATH}"
+  },
+  "files.watcherExclude": { "**/.tools/**": true, "**/backend/.venv/**": true }
+}

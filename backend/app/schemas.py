@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PersonCreate(BaseModel):
@@ -26,7 +26,12 @@ class RecognitionRequest(BaseModel):
 
 class RecognitionResult(BaseModel):
     event_id: str
-    decision: Literal["approved", "manual_review", "denied"]
+    review_id: str | None = None
+    entry_evidence_url: str | None = None
+    entered_at: str | None = None
+    evidence_url: str | None = None
+    captured_at: str | None = None
+    decision: Literal["approved", "manual_review", "manual_approved", "denied"]
     reason: str
     person_name: str | None = None
     plate_number: str | None = None
@@ -42,3 +47,14 @@ class ManualGateEventRequest(BaseModel):
     exception_type: Literal["pedestrian", "emergency", "camera_failure", "security_override"]
     operator_name: str = Field(default="Bảo vệ cổng", min_length=2, max_length=120)
     note: str | None = Field(default=None, max_length=300)
+
+
+class ExitReviewResolution(BaseModel):
+    action: Literal["approve", "reject"]
+    operator_name: str = Field(min_length=2, max_length=120)
+    reason: str = Field(min_length=3, max_length=300)
+
+    @field_validator("operator_name", "reason", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value

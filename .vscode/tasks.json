@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Backend API",
+      "type": "process",
+      "command": "${workspaceFolder}/backend/.venv/bin/python",
+      "args": ["-m", "uvicorn", "app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8000"],
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend dashboard",
+      "type": "process",
+      "command": "${workspaceFolder}/.tools/node-v22.23.5-darwin-arm64/bin/node",
+      "args": ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5174", "--strictPort"],
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run project (Mac)",
+      "dependsOn": ["Backend API", "Frontend dashboard"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}
