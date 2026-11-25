@@ -22,4 +22,3 @@ __pycache__/
 .DS_Store
 
 backend/data/evidence/
-backend/tests/

@@ -5,22 +5,88 @@
       "label": "Backend API",
       "type": "process",
       "command": "${workspaceFolder}/backend/.venv/bin/python",
-      "args": ["-m", "uvicorn", "app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8000"],
-      "options": { "cwd": "${workspaceFolder}/backend" },
-      "problemMatcher": []
+      "args": [
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--reload",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "problemMatcher": [],
+      "windows": {
+        "command": "${workspaceFolder}\\backend\\.venv\\Scripts\\python.exe"
+      }
     },
     {
       "label": "Frontend dashboard",
       "type": "process",
       "command": "${workspaceFolder}/.tools/node-v22.23.5-darwin-arm64/bin/node",
-      "args": ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5174", "--strictPort"],
-      "options": { "cwd": "${workspaceFolder}/frontend" },
-      "problemMatcher": []
+      "args": [
+        "node_modules/vite/bin/vite.js",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "problemMatcher": [],
+      "windows": {
+        "command": "npm",
+        "args": [
+          "run",
+          "dev",
+          "--",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "5174",
+          "--strictPort"
+        ]
+      }
     },
     {
       "label": "Run project (Mac)",
-      "dependsOn": ["Backend API", "Frontend dashboard"],
+      "dependsOn": [
+        "Backend API",
+        "Frontend dashboard"
+      ],
       "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run project (Windows)",
+      "dependsOn": [
+        "Backend API",
+        "Frontend dashboard"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "Tests backend",
+      "type": "process",
+      "command": "${workspaceFolder}/backend/.venv/bin/python",
+      "windows": {
+        "command": "${workspaceFolder}\\backend\\.venv\\Scripts\\python.exe"
+      },
+      "args": [
+        "-m",
+        "pytest",
+        "-q",
+        "tests"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
       "problemMatcher": []
     }
   ]

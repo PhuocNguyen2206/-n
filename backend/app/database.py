@@ -96,6 +96,9 @@ def initialize_database() -> None:
         event_columns = {row[1] for row in connection.execute("PRAGMA table_info(access_events)")}
         if "evidence_path" not in event_columns:
             connection.execute("ALTER TABLE access_events ADD COLUMN evidence_path TEXT")
+        if "plate_source" not in event_columns:
+            # "ocr" = YOLOv8 + chars_best, "vlm" = Qwen2.5-VL đọc lại khi OCR nghi ngờ.
+            connection.execute("ALTER TABLE access_events ADD COLUMN plate_source TEXT")
         session_columns = {row[1] for row in connection.execute("PRAGMA table_info(gate_sessions)")}
         if "entry_evidence_path" not in session_columns:
             connection.execute("ALTER TABLE gate_sessions ADD COLUMN entry_evidence_path TEXT")

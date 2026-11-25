@@ -6,6 +6,12 @@ services:
     volumes:
       - ./backend/data:/app/data
       - ./backend/models:/app/models
+    environment:
+      # Ollama chạy trên máy host (không chạy trong container).
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - VLM_MODEL=qwen2.5vl:3b
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   dashboard:
     build: ./frontend

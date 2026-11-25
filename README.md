@@ -6,7 +6,7 @@ Sản phẩm đồ án kiểm soát phương tiện tại cổng trường bằn
 
 - Quét riêng ảnh khuôn mặt và ảnh xe/biển số, phù hợp mô phỏng hai camera.
 - Màn hình làn xe thời gian thực: mở hai luồng camera, quét tự động mỗi 3 giây và hiển thị quyết định cho phép/từ chối tại chỗ.
-- YOLOv8 phát hiện xe/người; EasyOCR đọc ký tự biển số; FaceNet tạo đặc trưng khuôn mặt trên CPU.
+- Đọc biển số kết hợp: YOLOv8 (`license_plate.pt`) tìm biển, `chars_best.pt` đọc ký tự; khi kết quả rỗng hoặc sai định dạng biển Việt Nam thì VLM **Qwen2.5-VL 3B** (chạy local qua Ollama) đọc lại. FaceNet tạo đặc trưng khuôn mặt trên CPU.
 - Không cần đăng ký trước: lúc xe vào, hệ thống lưu biển số và các khuôn mặt xuất hiện trong lượt xe.
 - Cơ chế fail-closed: lúc xe ra chỉ `approved` khi biển số có lượt vào đang mở và khuôn mặt khớp với một người được ghi nhận trong lượt vào đó. Mọi trường hợp khác bị từ chối và ghi nhật ký.
 - Phiên gửi xe: nếu có nhiều người cùng đi vào xe, chỉ cần một trong các khuôn mặt đó xuất hiện lúc ra là hợp lệ.
@@ -14,6 +14,32 @@ Sản phẩm đồ án kiểm soát phương tiện tại cổng trường bằn
 - API REST có Swagger để tích hợp camera thực tế: `http://localhost:8000/docs`.
 
 ## Chạy sản phẩm
+
+### Tầng đọc biển số bằng VLM (Windows và Mac giống nhau)
+
+Ollama và model **không nằm trong Git**; mỗi máy cài một lần:
+
+| Bước | Windows | macOS |
+|---|---|---|
+| 1. Cài Ollama | Tải bộ cài tại https://ollama.com/download | Tải app tại https://ollama.com/download hoặc `brew install ollama` |
+| 2. Tải model (~3,2 GB) | `powershell -ExecutionPolicy Bypass -File scripts\setup-vlm.ps1` | `bash scripts/setup-vlm.sh` |
+| 3. Chạy dự án | `powershell -ExecutionPolicy Bypass -File scripts\dev-win.ps1` hoặc VS Code task **Run project (Windows)** | `bash scripts/dev-mac.sh` (tự bật Ollama nếu đã cài) |
+
+Kiểm tra tại `http://127.0.0.1:8000/api/v1/model/status`, mục `vlm.available` phải là `true`.
+Trên Windows, muốn model nằm ở ổ D: chạy `setx OLLAMA_MODELS D:\OllamaModels` trước bước 2 rồi mở lại terminal.
+
+Cách hoạt động: YOLOv8 + `chars_best.pt` vẫn đọc trước (~0,1 s/ảnh). Chỉ khi kết quả rỗng hoặc
+không đúng dạng biển số Việt Nam (`^\d{2}[A-Z][A-Z0-9]?\d{4,5}$`) thì backend mới gửi ảnh cho
+VLM (~1–2 s trên GPU). Nhật ký lưu cột `plate_source` (`ocr`/`vlm`); giao diện gắn nhãn **VLM** ở
+những lượt được VLM đọc lại. **Nếu Ollama chưa cài hoặc đang tắt, hệ thống vẫn chạy bằng OCR như cũ**,
+không báo lỗi. Kết quả đo so sánh trên tập test: OCR 71,0 % → kết hợp 91,3 % biển đọc đúng hoàn toàn
+(chi tiết trong thư mục `vlm_benchmark` của đồ án).
+
+Biến môi trường tùy chọn: `VLM_ENABLED=0` (tắt hẳn VLM), `OLLAMA_HOST` (mặc định
+`http://127.0.0.1:11434`), `VLM_MODEL` (mặc định `qwen2.5vl:3b`), `VLM_TIMEOUT` (giây, mặc định 30).
+
+Chạy kiểm thử backend: `cd backend` rồi `.venv/bin/python -m pytest -q tests`
+(Windows: `.venv\Scripts\python.exe -m pytest -q tests`).
 
 ### Máy Mac Apple Silicon đã thiết lập
 
@@ -31,7 +57,7 @@ Hoặc trong VS Code: **Terminal → Run Task → Run project (Mac)**.
 Dashboard: `http://127.0.0.1:5174`; Swagger: `http://127.0.0.1:8000/docs`.
 Mở terminal mới trong VS Code để nhận PATH của Node.js và uv.
 
-Khi chuyển từ Windows, tắt API trên máy cũ rồi chép các file `.pt` trong
+Khi chuyển từ Windows, cài Ollama + model theo bảng ở trên, tắt API trên máy cũ rồi chép các file `.pt` trong
 `backend/models/` sang cùng thư mục trên Mac (gồm `license_plate.pt`,
 `plate_best.pt`, `chars_best.pt` nếu có). Muốn giữ phiên gửi xe, ảnh và
 dữ liệu cũ, chép cả `backend/data/`. Không chép `.venv` hoặc `node_modules`
@@ -82,7 +108,7 @@ Muốn triển khai hai làn đồng thời cần bốn camera và mở rộng q
 
 ## Mô hình và dữ liệu
 
-YOLOv8, EasyOCR và FaceNet được tự tải lần đầu khi sử dụng. Để đạt chỉ tiêu độ chính xác của đề tài trên dữ liệu thực tế, cần huấn luyện model biển số riêng từ dữ liệu đã gán nhãn và đặt tệp trọng số tại `backend/models/license_plate.pt`. Trọng số mô hình và ảnh khuôn mặt không được đưa lên GitHub.
+YOLOv8 và FaceNet được tự tải lần đầu khi sử dụng; model VLM tải bằng `scripts/setup-vlm.*`. Khi chạy bằng Docker, Ollama chạy trên máy host và container gọi qua `host.docker.internal`. Để đạt chỉ tiêu độ chính xác của đề tài trên dữ liệu thực tế, cần huấn luyện model biển số riêng từ dữ liệu đã gán nhãn và đặt tệp trọng số tại `backend/models/license_plate.pt`. Trọng số mô hình và ảnh khuôn mặt không được đưa lên GitHub.
 
 ## Chuẩn bị báo cáo tốt nghiệp
 

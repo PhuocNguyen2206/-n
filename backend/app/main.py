@@ -7,12 +7,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import get_connection, initialize_database
 from .schemas import ExitReviewResolution, ManualGateEventRequest, RecognitionResult
 from .services.vision import VisionService
+from .services.vlm import VlmPlateReader
 from .services.face import FaceService
 
 app = FastAPI(title="Vehicle AI Gateway", version="0.1.0")
@@ -34,6 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 vision_service: VisionService | None = None
+vlm_status_reader = VlmPlateReader()  # dùng cho /model/status khi chưa nạp VisionService
 face_service: FaceService | None = None
 
 
@@ -88,7 +91,8 @@ async def analyze_image(image: UploadFile = File(...)) -> dict:
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
     try:
-        analysis = get_vision_service().analyze_image(await image.read())
+        # Chạy trong threadpool: lượt gọi VLM (~1-2 s) không được chặn các request khác.
+        analysis = await run_in_threadpool(get_vision_service().analyze_image, await image.read())
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     return {
@@ -97,6 +101,10 @@ async def analyze_image(image: UploadFile = File(...)) -> dict:
         "detections": [item.__dict__ for item in analysis.detections],
         "plate_text": analysis.plate_text,
         "plate_confidence": analysis.plate_confidence,
+        "plate_source": analysis.plate_source,
+        "ocr_text": analysis.ocr_text,
+        "vlm_text": analysis.vlm_text,
+        "vlm_ms": analysis.vlm_ms,
     }
 
 
@@ -198,7 +206,7 @@ async def verify_gate_image(
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
     if paired_cameras and len(images) != 2:
         raise HTTPException(422, "Cần hai ảnh theo thứ tự: khuôn mặt, biển số")
-    plate, plate_confidence, faces, frames = None, 0.0, [], []
+    plate, plate_confidence, plate_source, faces, frames = None, 0.0, None, [], []
     for index, image in enumerate(images):
         if not image.content_type or not image.content_type.startswith("image/"):
             raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
@@ -212,9 +220,10 @@ async def verify_gate_image(
             raise HTTPException(422, "Ảnh không hợp lệ hoặc không đọc được") from error
         if not paired_cameras or index == 1:
             try:
-                analysis = get_vision_service().analyze_image(image_data)
+                analysis = await run_in_threadpool(get_vision_service().analyze_image, image_data)
                 if not plate and analysis.plate_text:
                     plate, plate_confidence = analysis.plate_text, analysis.plate_confidence or 0.0
+                    plate_source = analysis.plate_source
             except ValueError:
                 pass
         if not paired_cameras or index == 0:
@@ -269,8 +278,8 @@ async def verify_gate_image(
         if plate and faces and frames:
             evidence_path = save_evidence(event_id, direction, frames)
         connection.execute(
-            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, None, decision, reason, plate_confidence, score, evidence_path),
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path, plate_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, None, decision, reason, plate_confidence, score, evidence_path, plate_source if plate else None),
         )
         if plate and faces and direction == "entry" and decision == "approved" and not existing:
             session_id = str(uuid4())
@@ -285,6 +294,7 @@ async def verify_gate_image(
         captured_at=captured_at if evidence_path else None,
         face_detection_confidence=max((face.confidence for face in faces), default=None),
         face_similarity=score if plate else None,
+        plate_source=plate_source if plate else None,
     )
 
 
@@ -434,6 +444,9 @@ def model_status() -> dict:
         model_name = "plate_best.pt + chars_best.pt (đọc biển số 2 tầng)"
     else:
         model_name = "yolov8n.pt (mô hình tổng quát)"
+    vlm_status = get_vision_service().vlm.status() if vision_service is not None else vlm_status_reader.status()
+    if vlm_status["available"]:
+        model_name = f"{model_name} + {vlm_status['model']} (VLM dự phòng)"
     metrics_path = Path("data/model_metrics.json")
     try:
         evaluation = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else {}
@@ -450,4 +463,5 @@ def model_status() -> dict:
             "map50": evaluation.get("map50"),
         },
         "latest_confidence": dict(latest_event) if latest_event else None,
+        "vlm": vlm_status,
     }
