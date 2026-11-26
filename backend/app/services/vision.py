@@ -2,8 +2,9 @@
 
 1. YOLOv8 (``license_plate.pt``) phát hiện vùng biển số.
 2. ``chars_best.pt`` đọc từng ký tự trong vùng đó (nhanh, ~0,1 s/ảnh).
-3. Chỉ khi bước 2 không ra kết quả hoặc sai định dạng biển số Việt Nam thì
-   gọi VLM Qwen2.5-VL qua Ollama đọc lại (xem ``services/vlm.py``).
+3. Gọi VLM Qwen2.5-VL qua Ollama đọc lại (xem ``services/vlm.py``) khi bước 2
+   không ra kết quả, sai định dạng biển số Việt Nam, hoặc đúng định dạng nhưng
+   có ký tự độ tin cậy thấp (``OCR_MIN_CHAR_CONFIDENCE``).
 """
 
 import os
@@ -22,6 +23,7 @@ _yolo_config_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("YOLO_CONFIG_DIR", str(_yolo_config_dir))
 from ultralytics import YOLO
 
+from .. import config
 from .vlm import VlmPlateReader, is_valid_vn_plate
 
 
@@ -43,6 +45,7 @@ class AnalysisResult:
     ocr_text: str | None = None
     vlm_text: str | None = None
     vlm_ms: float | None = None
+    ocr_min_confidence: float | None = None
 
 
 class VisionService:
@@ -78,9 +81,10 @@ class VisionService:
         x1, y1, x2, y2 = box
         return image[max(0, y1):min(height, y2), max(0, x1):min(width, x2)]
 
-    def _read_with_character_model(self, candidate: np.ndarray) -> tuple[str | None, float | None]:
+    def _read_with_character_model(self, candidate: np.ndarray) -> tuple[str | None, float | None, float | None]:
+        """Trả về (biển số, độ tin cậy trung bình, độ tin cậy ký tự thấp nhất)."""
         if self.char_model is None or candidate.size == 0:
-            return None, None
+            return None, None, None
         result = self.char_model.predict(candidate, conf=0.35, iou=0.5, imgsz=640, verbose=False)[0]
         characters: list[tuple[float, float, str, float]] = []
         for box in result.boxes:
@@ -88,7 +92,7 @@ class VisionService:
             class_index = int(box.cls[0].item())
             characters.append(((x1 + x2) / 2, (y1 + y2) / 2, str(result.names[class_index]), float(box.conf[0].item())))
         if not characters:
-            return None, None
+            return None, None, None
 
         ys = [item[1] for item in characters]
         has_two_rows = max(ys) - min(ys) > max(8, candidate.shape[0] * 0.16)
@@ -101,7 +105,9 @@ class VisionService:
             raw_text = "".join(item[2] for item in sorted(characters, key=lambda item: item[0]))
         plate = self._normalize_plate(raw_text)
         confidence = sum(item[3] for item in characters) / len(characters)
-        return plate, round(confidence, 3) if plate else None
+        if not plate:
+            return None, None, None
+        return plate, round(confidence, 3), round(min(item[3] for item in characters), 3)
 
     def _plate_candidates(self, image: np.ndarray, detections: list[ObjectDetection]) -> list[np.ndarray]:
         candidates: list[np.ndarray] = []
@@ -120,18 +126,18 @@ class VisionService:
                         candidates.append(candidate)
         return candidates
 
-    def _read_plate(self, image: np.ndarray, detections: list[ObjectDetection]) -> tuple[str | None, float | None]:
+    def _read_plate(self, image: np.ndarray, detections: list[ObjectDetection]) -> tuple[str | None, float | None, float | None]:
         """Đọc bằng chars_best; trả về kết quả hợp lệ đầu tiên, nếu không có thì kết quả thô đầu tiên."""
-        fallback: tuple[str | None, float | None] = (None, None)
+        fallback: tuple[str | None, float | None, float | None] = (None, None, None)
         for candidate in self._plate_candidates(image, detections):
-            plate, confidence = self._read_with_character_model(candidate)
+            plate, confidence, min_confidence = self._read_with_character_model(candidate)
             if plate and is_valid_vn_plate(plate):
-                return plate, confidence
+                return plate, confidence, min_confidence
             if plate and fallback[0] is None:
-                fallback = (plate, confidence)
+                fallback = (plate, confidence, min_confidence)
         return fallback
 
-    def _detect_and_read(self, image: np.ndarray) -> tuple[list[ObjectDetection], str | None, float | None]:
+    def _detect_and_read(self, image: np.ndarray) -> tuple[list[ObjectDetection], str | None, float | None, float | None]:
         prediction = self.model.predict(image, conf=0.35, imgsz=640, verbose=False)[0]
         detections = [
             ObjectDetection(
@@ -141,22 +147,27 @@ class VisionService:
             )
             for box in prediction.boxes
         ]
-        plate_text, plate_confidence = self._read_plate(image, detections)
-        return detections, plate_text, plate_confidence
+        plate_text, plate_confidence, min_confidence = self._read_plate(image, detections)
+        return detections, plate_text, plate_confidence, min_confidence
 
     def analyze_image(self, image_data: bytes) -> AnalysisResult:
         image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("Tệp tải lên không phải ảnh hợp lệ")
         with self._yolo_lock:
-            detections, plate_text, plate_confidence = self._detect_and_read(image)
+            detections, plate_text, plate_confidence, min_confidence = self._detect_and_read(image)
         model_name = self.detector_path.name
         if self.char_model is not None:
             model_name = f"{model_name} + {self.character_path.name}"
         result = AnalysisResult(model_name, self.uses_plate_model, detections, plate_text, plate_confidence,
-                                plate_source="ocr" if plate_text else None, ocr_text=plate_text)
-        # Tầng dự phòng VLM: chỉ khi đã thấy biển số mà OCR đọc rỗng/sai định dạng.
-        if detections and not is_valid_vn_plate(plate_text):
+                                plate_source="ocr" if plate_text else None, ocr_text=plate_text,
+                                ocr_min_confidence=min_confidence)
+        # Tầng dự phòng VLM: đã thấy biển số mà OCR đọc rỗng, sai định dạng, hoặc
+        # đúng định dạng nhưng có ký tự không chắc chắn. Đo trên tập test: ngưỡng
+        # 0,5 bắt được 2/3 lỗi OCR "đúng định dạng nhưng sai ký tự", chỉ thêm 1 lượt
+        # gọi VLM trên 49 biển OCR đọc đúng.
+        unsure = min_confidence is not None and min_confidence < config.OCR_MIN_CHAR_CONFIDENCE
+        if detections and (not is_valid_vn_plate(plate_text) or unsure):
             reading = self.vlm.read_plate(image)
             if reading is not None:
                 result.vlm_text, result.vlm_ms = reading.raw_text, reading.elapsed_ms

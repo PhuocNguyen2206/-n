@@ -1,8 +1,8 @@
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
+from .config import data_directory
 
-DATABASE_PATH = Path("data/vehicle_ai.db")
+DATABASE_PATH = data_directory() / "vehicle_ai.db"
 
 
 def initialize_database() -> None:
@@ -84,6 +84,41 @@ def initialize_database() -> None:
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS staff_accounts (
+              username TEXT PRIMARY KEY,
+              full_name TEXT NOT NULL,
+              role TEXT NOT NULL DEFAULT 'guard',
+              password_hash TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1,
+              must_change_password INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+              token_hash TEXT PRIMARY KEY,
+              username TEXT NOT NULL REFERENCES staff_accounts(username),
+              created_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL
+            );
+            -- Ủy quyền lấy xe hộ: người khác người lúc vào được phép đưa xe ra.
+            CREATE TABLE IF NOT EXISTS exit_authorizations (
+              id TEXT PRIMARY KEY,
+              plate_number TEXT NOT NULL,
+              session_id TEXT NOT NULL REFERENCES gate_sessions(id),
+              owner_name TEXT NOT NULL,
+              borrower_name TEXT NOT NULL,
+              borrower_code TEXT NOT NULL,
+              embedding TEXT NOT NULL,
+              face_confidence REAL NOT NULL,
+              note TEXT,
+              created_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              valid_until TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'active',
+              used_event_id TEXT,
+              closed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_exit_authorizations_plate ON exit_authorizations(plate_number, status);
+            CREATE INDEX IF NOT EXISTS idx_access_events_occurred ON access_events(occurred_at);
             CREATE INDEX IF NOT EXISTS idx_access_events_plate ON access_events(plate_number);
             CREATE INDEX IF NOT EXISTS idx_vehicle_sessions_vehicle ON vehicle_sessions(vehicle_id, status);
             CREATE INDEX IF NOT EXISTS idx_gate_sessions_plate ON gate_sessions(plate_number, status);
@@ -99,6 +134,10 @@ def initialize_database() -> None:
         if "plate_source" not in event_columns:
             # "ocr" = YOLOv8 + chars_best, "vlm" = Qwen2.5-VL đọc lại khi OCR nghi ngờ.
             connection.execute("ALTER TABLE access_events ADD COLUMN plate_source TEXT")
+        if "authorization_id" not in event_columns:
+            connection.execute("ALTER TABLE access_events ADD COLUMN authorization_id TEXT")
+        if "operator_username" not in event_columns:
+            connection.execute("ALTER TABLE access_events ADD COLUMN operator_username TEXT")
         session_columns = {row[1] for row in connection.execute("PRAGMA table_info(gate_sessions)")}
         if "entry_evidence_path" not in session_columns:
             connection.execute("ALTER TABLE gate_sessions ADD COLUMN entry_evidence_path TEXT")
@@ -110,7 +149,7 @@ def initialize_database() -> None:
 
 @contextmanager
 def get_connection():
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
     try:
         yield connection

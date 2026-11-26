@@ -1,29 +1,41 @@
 import json
+import os
+import re
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
-
-from PIL import Image
-from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from PIL import Image
 
+from . import config
+from .auth import StaffUser, active_user, ensure_default_admin
+from .auth import router as auth_router
 from .database import get_connection, initialize_database
 from .schemas import ExitReviewResolution, ManualGateEventRequest, RecognitionResult
+from .services.face import FaceService
 from .services.vision import VisionService
 from .services.vlm import VlmPlateReader
-from .services.face import FaceService
 
-app = FastAPI(title="Vehicle AI Gateway", version="0.1.0")
-EVIDENCE_DIRECTORY = Path("data/evidence")
-EVIDENCE_DIRECTORY.mkdir(parents=True, exist_ok=True)
-app.mount("/evidence", StaticFiles(directory=str(EVIDENCE_DIRECTORY)), name="evidence")
-TRAINING_DIRECTORY = Path("data/training_samples")
-TRAINING_DIRECTORY.mkdir(parents=True, exist_ok=True)
-app.mount("/training-data", StaticFiles(directory=str(TRAINING_DIRECTORY)), name="training-data")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    EVIDENCE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    TRAINING_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    initialize_database()
+    ensure_default_admin()
+    yield
+
+
+app = FastAPI(title="Vehicle AI Gateway", version="0.2.0", lifespan=lifespan)
+EVIDENCE_DIRECTORY = config.data_directory() / "evidence"
+TRAINING_DIRECTORY = config.data_directory() / "training_samples"
+MODELS_DIRECTORY = config.BACKEND_DIRECTORY / "models"
+_extra_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -31,18 +43,17 @@ app.add_middleware(
         "http://localhost:5174",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
+        *_extra_origins,
     ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(auth_router)
 vision_service: VisionService | None = None
 vlm_status_reader = VlmPlateReader()  # dùng cho /model/status khi chưa nạp VisionService
 face_service: FaceService | None = None
-
-
-@app.on_event("startup")
-def startup() -> None:
-    initialize_database()
+_SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def get_vision_service() -> VisionService:
@@ -59,9 +70,43 @@ def get_face_service() -> FaceService:
     return face_service
 
 
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def evidence_url(path: str | None) -> str | None:
+    return f"/evidence/{path}" if path else None
+
+
+def normalize_plate_input(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", text.upper())
+
+
+async def read_image_upload(image: UploadFile) -> bytes:
+    """Đọc ảnh tải lên với giới hạn dung lượng; chặn tệp không phải ảnh."""
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+    limit = int(config.MAX_UPLOAD_MB * 1024 * 1024)
+    data = await image.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, f"Ảnh vượt quá {config.MAX_UPLOAD_MB:g} MB")
+    if not data:
+        raise HTTPException(422, "Ảnh rỗng")
+    return data
+
+
+def ensure_decodable(image_data: bytes) -> None:
+    try:
+        with Image.open(BytesIO(image_data)) as decoded:
+            decoded.verify()
+    except (OSError, ValueError) as error:
+        raise HTTPException(422, "Ảnh không hợp lệ hoặc không đọc được") from error
+
+
 def save_evidence(event_id: str, direction: str, frames: list[bytes]) -> str:
     """Store one JPEG; paired inputs keep face (left) and plate (right)."""
     filename = f"{event_id}_{direction}.jpg"
+    EVIDENCE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     if len(frames) == 1:
         with Image.open(BytesIO(frames[0])) as image:
             image.convert("RGB").save(EVIDENCE_DIRECTORY / filename, format="JPEG", quality=90)
@@ -81,18 +126,37 @@ def save_evidence(event_id: str, direction: str, frames: list[bytes]) -> str:
     return filename
 
 
+def _serve_file(directory: Path, filename: str) -> FileResponse:
+    if not _SAFE_FILENAME.match(filename):
+        raise HTTPException(404, "Không tìm thấy tệp")
+    path = directory / filename
+    if not path.is_file():
+        raise HTTPException(404, "Không tìm thấy tệp")
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/evidence/{filename}")
+def get_evidence(filename: str, _: StaffUser = Depends(active_user)) -> FileResponse:
+    """Ảnh bằng chứng có khuôn mặt: chỉ người đã đăng nhập mới xem được."""
+    return _serve_file(EVIDENCE_DIRECTORY, filename)
+
+
+@app.get("/training-data/{filename}")
+def get_training_image(filename: str, _: StaffUser = Depends(active_user)) -> FileResponse:
+    return _serve_file(TRAINING_DIRECTORY, filename)
+
+
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/api/v1/vision/analyze")
-async def analyze_image(image: UploadFile = File(...)) -> dict:
-    if not image.content_type or not image.content_type.startswith("image/"):
-        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+async def analyze_image(image: UploadFile = File(...), _: StaffUser = Depends(active_user)) -> dict:
+    image_data = await read_image_upload(image)
     try:
         # Chạy trong threadpool: lượt gọi VLM (~1-2 s) không được chặn các request khác.
-        analysis = await run_in_threadpool(get_vision_service().analyze_image, await image.read())
+        analysis = await run_in_threadpool(get_vision_service().analyze_image, image_data)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     return {
@@ -103,28 +167,28 @@ async def analyze_image(image: UploadFile = File(...)) -> dict:
         "plate_confidence": analysis.plate_confidence,
         "plate_source": analysis.plate_source,
         "ocr_text": analysis.ocr_text,
+        "ocr_min_confidence": analysis.ocr_min_confidence,
         "vlm_text": analysis.vlm_text,
         "vlm_ms": analysis.vlm_ms,
     }
 
 
 @app.post("/api/v1/face/analyze")
-async def analyze_face(image: UploadFile = File(...)) -> dict:
+async def analyze_face(image: UploadFile = File(...), _: StaffUser = Depends(active_user)) -> dict:
     """Chế độ demo: chỉ phát hiện khuôn mặt, không lưu và không đối chiếu danh tính."""
-    if not image.content_type or not image.content_type.startswith("image/"):
-        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+    image_data = await read_image_upload(image)
     try:
-        return get_face_service().detect(await image.read())
+        return await run_in_threadpool(get_face_service().detect, image_data)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
 
 @app.post("/api/v1/gate/manual", response_model=RecognitionResult)
-def record_manual_gate_event(request: ManualGateEventRequest) -> RecognitionResult:
+def record_manual_gate_event(request: ManualGateEventRequest, user: StaffUser = Depends(active_user)) -> RecognitionResult:
     """Ghi nhận ngoại lệ khi cổng không áp dụng quét AI.
 
-    Đây không phải là "bỏ qua" kiểm soát: bảo vệ vẫn phải chọn lý do, xác
-    nhận người xử lý và để lại ghi chú để truy vết trong nhật ký.
+    Đây không phải là "bỏ qua" kiểm soát: bảo vệ đã đăng nhập vẫn phải chọn lý
+    do và để lại ghi chú để truy vết trong nhật ký.
     """
     exception_labels = {
         "pedestrian": "Người đi bộ (không thuộc phạm vi kiểm soát xe)",
@@ -133,23 +197,17 @@ def record_manual_gate_event(request: ManualGateEventRequest) -> RecognitionResu
         "security_override": "Bảo vệ xác nhận thủ công",
     }
     event_id = str(uuid4())
-    note = request.note.strip() if request.note else "Không có ghi chú thêm"
-    reason = f"[XỬ LÝ THỦ CÔNG] {exception_labels[request.exception_type]} · Bảo vệ: {request.operator_name.strip()} · {note}"
+    note = request.note.strip() if request.note and request.note.strip() else "Không có ghi chú thêm"
+    reason = f"[XỬ LÝ THỦ CÔNG] {exception_labels[request.exception_type]} · Bảo vệ: {user.full_name} ({user.username}) · {note}"
     with get_connection() as connection:
         connection.execute(
-            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, datetime.now(timezone.utc).isoformat(), request.direction, None, None, "manual_review", reason, None, None, None),
+            "INSERT INTO access_events (id, occurred_at, direction, decision, reason, operator_username) VALUES (?, ?, ?, 'manual_review', ?, ?)",
+            (event_id, now_iso(), request.direction, reason, user.username),
         )
-    return RecognitionResult(
-        event_id=event_id,
-        decision="manual_review",
-        reason=reason,
-        plate_number=None,
-        face_detected=False,
-    )
+    return RecognitionResult(event_id=event_id, decision="manual_review", reason=reason)
 
 
-def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes]) -> RecognitionResult | None:
+def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes], score: float | None, operator: str) -> RecognitionResult | None:
     """A review belongs to one open session, with immutable scan evidence."""
     session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
     if session is None:
@@ -157,27 +215,38 @@ def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes]
     pending = connection.execute("SELECT r.id AS review_id, e.* FROM exit_reviews r JOIN access_events e ON e.id = r.event_id WHERE r.session_id = ? AND r.status = 'pending' LIMIT 1", (session["id"],)).fetchone()
     if pending:
         event_id, review_id, evidence_path, occurred_at = pending["id"], pending["review_id"], pending["evidence_path"], pending["occurred_at"]
-        reason = pending["reason"]
+        reason, score = pending["reason"], pending["face_confidence"]
     else:
         event_id, review_id = str(uuid4()), str(uuid4())
-        occurred_at = datetime.now(timezone.utc).isoformat()
+        occurred_at = now_iso()
         evidence_path = save_evidence(event_id, "exit", frames)
-        connection.execute("INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, evidence_path) VALUES (?, ?, 'exit', ?, 'manual_review', ?, ?)", (event_id, occurred_at, plate, reason, evidence_path))
+        connection.execute(
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, face_confidence, evidence_path, operator_username) VALUES (?, ?, 'exit', ?, 'manual_review', ?, ?, ?, ?)",
+            (event_id, occurred_at, plate, reason, score, evidence_path, operator),
+        )
         connection.execute("INSERT INTO exit_reviews (id, session_id, event_id) VALUES (?, ?, ?)", (review_id, session["id"], event_id))
     return RecognitionResult(event_id=event_id, review_id=review_id, decision="manual_review", reason=reason, plate_number=plate,
-        evidence_url=f"/evidence/{evidence_path}" if evidence_path else None, captured_at=occurred_at,
-        entry_evidence_url=f"/evidence/{session['entry_evidence_path']}" if session["entry_evidence_path"] else None, entered_at=session["entered_at"])
+        evidence_url=evidence_url(evidence_path), captured_at=occurred_at, face_similarity=score,
+        entry_evidence_url=evidence_url(session["entry_evidence_path"]), entered_at=session["entered_at"])
+
+
+def expire_session_authorizations(connection, session_id: str, used_authorization: str | None = None) -> None:
+    """Phiên đã đóng thì mọi ủy quyền còn lại của phiên hết hiệu lực."""
+    connection.execute(
+        "UPDATE exit_authorizations SET status = 'expired', closed_at = ? WHERE session_id = ? AND status = 'active' AND id IS NOT ?",
+        (now_iso(), session_id, used_authorization),
+    )
 
 
 @app.get("/api/v1/gate/exit-reviews/pending")
-def pending_exit_reviews() -> list[dict]:
+def pending_exit_reviews(_: StaffUser = Depends(active_user)) -> list[dict]:
     with get_connection() as connection:
-        rows = connection.execute("SELECT r.id AS review_id, e.id AS event_id, e.plate_number, e.reason, e.evidence_path, e.occurred_at AS captured_at, s.entry_evidence_path, s.entered_at FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.status = 'pending' AND s.status = 'open' ORDER BY e.occurred_at DESC LIMIT 20").fetchall()
-        return [dict(row) | {"evidence_url": f"/evidence/{row['evidence_path']}" if row["evidence_path"] else None, "entry_evidence_url": f"/evidence/{row['entry_evidence_path']}" if row["entry_evidence_path"] else None} for row in rows]
+        rows = connection.execute("SELECT r.id AS review_id, e.id AS event_id, e.plate_number, e.reason, e.evidence_path, e.face_confidence AS face_similarity, e.occurred_at AS captured_at, s.entry_evidence_path, s.entered_at FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.status = 'pending' AND s.status = 'open' ORDER BY e.occurred_at DESC LIMIT 20").fetchall()
+        return [dict(row) | {"evidence_url": evidence_url(row["evidence_path"]), "entry_evidence_url": evidence_url(row["entry_evidence_path"])} for row in rows]
 
 
 @app.post("/api/v1/gate/exit-reviews/{review_id}/resolve", response_model=RecognitionResult)
-def resolve_exit_review(review_id: str, request: ExitReviewResolution) -> RecognitionResult:
+def resolve_exit_review(review_id: str, request: ExitReviewResolution, user: StaffUser = Depends(active_user)) -> RecognitionResult:
     with get_connection() as connection:
         # Serialise approvals; a second click/client cannot close a different session.
         connection.execute("BEGIN IMMEDIATE")
@@ -186,38 +255,64 @@ def resolve_exit_review(review_id: str, request: ExitReviewResolution) -> Recogn
             raise HTTPException(404, "Không tìm thấy yêu cầu xác nhận")
         if review["review_status"] != "pending" or review["session_status"] != "open":
             raise HTTPException(409, "Yêu cầu đã xử lý hoặc phiên xe đã đóng; hãy quét lại")
-        event_id, now = str(uuid4()), datetime.now(timezone.utc).isoformat()
+        event_id, now = str(uuid4()), now_iso()
         approved = request.action == "approve"
         decision = "manual_approved" if approved else "denied"
-        reason = f"[BẢO VỆ XÁC NHẬN] {'Cho xe ra' if approved else 'Không cho xe ra'} · Người xử lý: {request.operator_name} · Lý do: {request.reason} · AI: {review['reason']}"
-        connection.execute("INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, evidence_path) VALUES (?, ?, 'exit', ?, ?, ?, ?)", (event_id, now, review["plate_number"], decision, reason, review["evidence_path"]))
+        reason = f"[BẢO VỆ XÁC NHẬN] {'Cho xe ra' if approved else 'Không cho xe ra'} · Người xử lý: {user.full_name} ({user.username}) · Lý do: {request.reason} · AI: {review['reason']}"
+        connection.execute(
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, face_confidence, evidence_path, operator_username) VALUES (?, ?, 'exit', ?, ?, ?, ?, ?, ?)",
+            (event_id, now, review["plate_number"], decision, reason, review["face_confidence"], review["evidence_path"], user.username),
+        )
         connection.execute("UPDATE exit_reviews SET status = ? WHERE id = ?", ("approved" if approved else "rejected", review_id))
         if approved:
             connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ? AND status = 'open'", (now, event_id, review["evidence_path"], review["session_id"]))
-        return RecognitionResult(event_id=event_id, decision=decision, reason=reason, plate_number=review["plate_number"], evidence_url=f"/evidence/{review['evidence_path']}" if review["evidence_path"] else None, captured_at=review["occurred_at"])
+            expire_session_authorizations(connection, review["session_id"])
+        return RecognitionResult(event_id=event_id, decision=decision, reason=reason, plate_number=review["plate_number"], evidence_url=evidence_url(review["evidence_path"]), captured_at=review["occurred_at"])
+
+
+def match_exit(connection, session, faces) -> tuple[float, dict | None, float, bool]:
+    """Độ giống lớn nhất với người lúc vào; nếu không khớp thì xét ủy quyền còn hiệu lực.
+
+    Trả về (độ giống với người lúc vào, ủy quyền khớp, độ giống với ủy quyền tốt nhất, có ủy quyền nào không).
+    """
+    face_service_instance = get_face_service()
+    entry_faces = connection.execute("SELECT embedding FROM gate_session_faces WHERE session_id = ?", (session["id"],)).fetchall()
+    score = max((face_service_instance.similarity(current.embedding, json.loads(saved["embedding"])) for current in faces for saved in entry_faces), default=0.0)
+    if score >= config.FACE_MATCH_THRESHOLD:
+        return score, None, 0.0, False
+    authorizations = connection.execute(
+        "SELECT * FROM exit_authorizations WHERE session_id = ? AND status = 'active' AND julianday(valid_until) > julianday(?)",
+        (session["id"], now_iso()),
+    ).fetchall()
+    best, best_score = None, 0.0
+    for authorization in authorizations:
+        embedding = json.loads(authorization["embedding"])
+        candidate = max(face_service_instance.similarity(current.embedding, embedding) for current in faces)
+        if candidate > best_score:
+            best, best_score = dict(authorization), candidate
+    if best is not None and best_score >= config.FACE_MATCH_THRESHOLD:
+        return score, best, best_score, True
+    return score, None, best_score, bool(authorizations)
 
 
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
 async def verify_gate_image(
     images: list[UploadFile] = File(...), direction: str = Form("exit"), automatic: bool = Form(False),
-    paired_cameras: bool = Form(False)
+    paired_cameras: bool = Form(False), user: StaffUser = Depends(active_user),
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
     if paired_cameras and len(images) != 2:
         raise HTTPException(422, "Cần hai ảnh theo thứ tự: khuôn mặt, biển số")
+    if len(images) > 4:
+        raise HTTPException(422, "Tối đa 4 ảnh cho một lượt quét")
     plate, plate_confidence, plate_source, faces, frames = None, 0.0, None, [], []
-    for index, image in enumerate(images):
-        if not image.content_type or not image.content_type.startswith("image/"):
-            raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
-        image_data = await image.read()
+    for image in images:
+        image_data = await read_image_upload(image)
+        # Decode every input before analysing or saving, including a dedicated face frame.
+        ensure_decodable(image_data)
         frames.append(image_data)
-        # Decode every input before saving, including a dedicated face frame.
-        try:
-            with Image.open(BytesIO(image_data)) as decoded:
-                decoded.verify()
-        except (OSError, ValueError) as error:
-            raise HTTPException(422, "Ảnh không hợp lệ hoặc không đọc được") from error
+    for index, image_data in enumerate(frames):
         if not paired_cameras or index == 1:
             try:
                 analysis = await run_in_threadpool(get_vision_service().analyze_image, image_data)
@@ -228,87 +323,183 @@ async def verify_gate_image(
                 pass
         if not paired_cameras or index == 0:
             try:
-                faces.extend(get_face_service().extract_all(image_data))
+                faces.extend(await run_in_threadpool(get_face_service().extract_all, image_data))
             except ValueError:
                 pass
+    face_confidence = max((face.confidence for face in faces), default=None)
     event_id = str(uuid4())
-    decision, reason, score = "denied", "Không đọc được biển số xe", 0.0
-    evidence_path = None
-    captured_at = datetime.now(timezone.utc).isoformat()
+    decision, reason, score = "denied", "Không đọc được biển số xe", None
+    evidence_path, session, authorization = None, None, None
+    captured_at = now_iso()
     with get_connection() as connection:
+        # Khóa ghi ngay từ đầu: hai khung hình đến cùng lúc không thể tạo hai phiên
+        # cho cùng một biển số hoặc đóng cùng một phiên hai lần.
+        connection.execute("BEGIN IMMEDIATE")
         # Camera tự động gửi nhiều khung hình. Khi khung chưa đủ dữ liệu, chỉ
         # báo trạng thái chờ thay vì ghi hàng loạt lỗi vào nhật ký bảo vệ.
         if direction == "exit" and plate and not faces:
-            review = prepare_exit_review(connection, plate, "Không xác minh được khuôn mặt; cần bảo vệ kiểm tra trực tiếp", frames)
+            review = prepare_exit_review(connection, plate, "Không xác minh được khuôn mặt; cần bảo vệ kiểm tra trực tiếp", frames, None, user.username)
             if review:
                 return review
         if automatic and (not plate or not faces):
             waiting_reason = "Đang chờ biển số xe rõ" if not plate else "Đang chờ khuôn mặt rõ"
             return RecognitionResult(
                 event_id="live-preview", decision="manual_review", reason=waiting_reason,
-                plate_number=plate, face_detected=bool(faces),
-                face_detection_confidence=max((face.confidence for face in faces), default=None),
+                plate_number=plate, face_detected=bool(faces), face_detection_confidence=face_confidence,
             )
         if not faces:
-            reason = "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn"
+            reason = "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn" if plate else "Không đọc được biển số xe và không thấy khuôn mặt rõ"
         elif plate and direction == "entry":
-            existing = connection.execute("SELECT id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
-            decision, reason = "approved", ("Xe đã có lượt vào đang mở; bỏ qua khung hình lặp" if existing else "Đã ghi nhận xe và khuôn mặt tại thời điểm vào")
-            if automatic and existing:
+            existing = connection.execute("SELECT id, entry_event_id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+            if existing:
+                # Khung hình lặp của xe đã vào: không ghi thêm nhật ký, không tạo phiên mới.
                 return RecognitionResult(
-                    event_id=existing["id"], decision="approved", reason=reason, plate_number=plate,
-                    face_detected=True, face_detection_confidence=max(face.confidence for face in faces),
+                    event_id=existing["entry_event_id"], decision="approved", reason="Xe đã có lượt vào đang mở; bỏ qua khung hình lặp",
+                    plate_number=plate, face_detected=True, face_detection_confidence=face_confidence, plate_source=plate_source,
                 )
+            decision, reason = "approved", "Đã ghi nhận xe và khuôn mặt tại thời điểm vào"
         elif plate:
             session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
             if not session:
                 reason = "Không có lượt vào đang mở của biển số này"
             else:
-                entry_faces = connection.execute("SELECT embedding FROM gate_session_faces WHERE session_id = ?", (session["id"],)).fetchall()
-                similarities = [get_face_service().similarity(current.embedding, json.loads(saved["embedding"])) for current in faces for saved in entry_faces]
-                score = max(similarities, default=0.0)
-                if score >= 0.45:
+                score, authorization, authorization_score, has_authorizations = match_exit(connection, session, faces)
+                if score >= config.FACE_MATCH_THRESHOLD:
                     decision, reason = "approved", "Khuôn mặt khớp với người đã vào cùng xe"
+                elif authorization:
+                    decision = "approved"
+                    reason = (f"Người được ủy quyền lấy xe: {authorization['borrower_name']} ({authorization['borrower_code']}) · "
+                              f"Chủ xe: {authorization['owner_name']} · Độ giống {authorization_score:.2f}")
+                    score = authorization_score
                 else:
-                    reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào"
+                    reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào" + (" hoặc người được ủy quyền" if has_authorizations else "")
         if direction == "exit" and plate and decision == "denied":
-            review = prepare_exit_review(connection, plate, reason, frames)
+            review = prepare_exit_review(connection, plate, reason, frames, score, user.username)
             if review:
                 return review
         if plate and faces and frames:
             evidence_path = save_evidence(event_id, direction, frames)
         connection.execute(
-            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path, plate_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, datetime.now(timezone.utc).isoformat(), direction, plate, None, decision, reason, plate_confidence, score, evidence_path, plate_source if plate else None),
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path, plate_source, authorization_id, operator_username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, captured_at, direction, plate, None, decision, reason, plate_confidence, score, evidence_path,
+             plate_source if plate else None, authorization["id"] if authorization else None, user.username),
         )
-        if plate and faces and direction == "entry" and decision == "approved" and not existing:
+        if plate and faces and direction == "entry" and decision == "approved":
             session_id = str(uuid4())
-            connection.execute("INSERT INTO gate_sessions (id, plate_number, entry_event_id, entered_at, entry_evidence_path) VALUES (?, ?, ?, ?, ?)", (session_id, plate, event_id, datetime.now(timezone.utc).isoformat(), evidence_path))
+            connection.execute("INSERT INTO gate_sessions (id, plate_number, entry_event_id, entered_at, entry_evidence_path) VALUES (?, ?, ?, ?, ?)", (session_id, plate, event_id, captured_at, evidence_path))
             connection.executemany("INSERT INTO gate_session_faces (session_id, embedding, confidence) VALUES (?, ?, ?)", [(session_id, json.dumps(face.embedding), face.confidence) for face in faces])
         if plate and direction == "exit" and decision == "approved" and session:
-            connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), event_id, evidence_path, session["id"]))
+            connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ?", (captured_at, event_id, evidence_path, session["id"]))
+            if authorization:
+                connection.execute("UPDATE exit_authorizations SET status = 'used', used_event_id = ?, closed_at = ? WHERE id = ?", (event_id, captured_at, authorization["id"]))
+            expire_session_authorizations(connection, session["id"], authorization["id"] if authorization else None)
     return RecognitionResult(
         event_id=event_id, decision=decision, reason=reason,
         plate_number=plate, face_detected=bool(faces),
-        evidence_url=f"/evidence/{evidence_path}" if evidence_path else None,
+        evidence_url=evidence_url(evidence_path),
         captured_at=captured_at if evidence_path else None,
-        face_detection_confidence=max((face.confidence for face in faces), default=None),
+        face_detection_confidence=face_confidence,
         face_similarity=score if plate else None,
         plate_source=plate_source if plate else None,
+        authorization_id=authorization["id"] if authorization else None,
     )
 
 
+# ---------- Ủy quyền lấy xe hộ (xe mượn) ----------
+
+def _authorization_view(row) -> dict:
+    item = {key: row[key] for key in row.keys() if key != "embedding"}
+    if item["status"] == "active":
+        expired = datetime.fromisoformat(item["valid_until"]) <= datetime.now(timezone.utc)
+        if expired or row["session_status"] != "open":
+            item["status"] = "expired"
+    return item
+
+
+@app.post("/api/v1/authorizations", status_code=201)
+async def create_authorization(
+    plate_number: str = Form(..., max_length=20), owner_name: str = Form(..., max_length=120),
+    borrower_name: str = Form(..., max_length=120), borrower_code: str = Form(..., max_length=30),
+    valid_hours: float = Form(4), note: str = Form("", max_length=300), face_image: UploadFile = File(...),
+    user: StaffUser = Depends(active_user),
+) -> dict:
+    """Chủ xe đã vào bãi nhờ người khác lấy xe ra; bảo vệ ghi nhận khuôn mặt người lấy hộ."""
+    plate = normalize_plate_input(plate_number)
+    owner, borrower, code = owner_name.strip(), borrower_name.strip(), borrower_code.strip().upper()
+    if len(plate) < 5:
+        raise HTTPException(422, "Biển số không hợp lệ")
+    if len(owner) < 2 or len(borrower) < 2 or len(code) < 3:
+        raise HTTPException(422, "Cần tên chủ xe, tên và mã số (MSSV/CCCD) của người lấy xe hộ")
+    if not 0 < valid_hours <= config.MAX_AUTHORIZATION_HOURS:
+        raise HTTPException(422, f"Thời hạn ủy quyền từ 0 đến {config.MAX_AUTHORIZATION_HOURS:g} giờ")
+    image_data = await read_image_upload(face_image)
+    ensure_decodable(image_data)
+    try:
+        face = await run_in_threadpool(get_face_service().extract, image_data)
+    except ValueError as error:
+        raise HTTPException(422, "Ảnh người lấy xe hộ không có khuôn mặt rõ") from error
+    now = datetime.now(timezone.utc)
+    authorization_id = str(uuid4())
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        session = connection.execute("SELECT id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+        if session is None:
+            raise HTTPException(404, "Biển số này không có lượt vào đang mở; chỉ ủy quyền cho xe đang ở trong bãi")
+        connection.execute(
+            "INSERT INTO exit_authorizations (id, plate_number, session_id, owner_name, borrower_name, borrower_code, embedding, face_confidence, note, created_by, created_at, valid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (authorization_id, plate, session["id"], owner, borrower, code, json.dumps(face.embedding), face.confidence,
+             note.strip() or None, user.username, now.isoformat(), (now + timedelta(hours=valid_hours)).isoformat()),
+        )
+        row = connection.execute("SELECT a.*, s.status AS session_status FROM exit_authorizations a JOIN gate_sessions s ON s.id = a.session_id WHERE a.id = ?", (authorization_id,)).fetchone()
+    return _authorization_view(row)
+
+
+@app.get("/api/v1/authorizations")
+def list_authorizations(active_only: bool = False, limit: int = Query(50, ge=1, le=200), _: StaffUser = Depends(active_user)) -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT a.*, s.status AS session_status FROM exit_authorizations a JOIN gate_sessions s ON s.id = a.session_id ORDER BY a.created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    items = [_authorization_view(row) for row in rows]
+    return [item for item in items if item["status"] == "active"] if active_only else items
+
+
+@app.post("/api/v1/authorizations/{authorization_id}/revoke")
+def revoke_authorization(authorization_id: str, user: StaffUser = Depends(active_user)) -> dict:
+    with get_connection() as connection:
+        result = connection.execute("UPDATE exit_authorizations SET status = 'revoked', closed_at = ? WHERE id = ? AND status = 'active'", (now_iso(), authorization_id))
+        if result.rowcount == 0:
+            raise HTTPException(409, "Ủy quyền không còn hiệu lực hoặc không tồn tại")
+    return {"id": authorization_id, "status": "revoked", "revoked_by": user.username}
+
+
+# ---------- Thống kê và nhật ký ----------
+
 @app.get("/api/v1/dashboard/summary")
-def dashboard_summary() -> dict:
+def dashboard_summary(since: datetime | None = None, _: StaffUser = Depends(active_user)) -> dict:
+    """Đếm theo quyết định. ``approved`` gồm cả lượt bảo vệ duyệt; ``pending`` là lượt chờ bảo vệ."""
+    if since is not None and since.utcoffset() is None:
+        raise HTTPException(422, "Thời gian phải có múi giờ")
+    where, values = ("WHERE julianday(occurred_at) >= julianday(?)", [since.astimezone(timezone.utc).isoformat()]) if since else ("", [])
     with get_connection() as connection:
         totals = connection.execute(
-            "SELECT COUNT(*) AS total, SUM(decision = 'approved') AS approved, SUM(decision = 'denied') AS denied FROM access_events"
+            f"SELECT COUNT(*) AS total, SUM(decision = 'approved') AS ai_approved, SUM(decision = 'manual_approved') AS manual_approved, "
+            f"SUM(decision = 'denied') AS denied, SUM(decision = 'manual_review') AS pending, SUM(authorization_id IS NOT NULL) AS authorized "
+            f"FROM access_events {where}", values,
         ).fetchone()
-        return {
-            "events": totals["total"] or 0,
-            "approved": totals["approved"] or 0,
-            "denied": totals["denied"] or 0,
-        }
+        open_sessions = connection.execute("SELECT COUNT(*) FROM gate_sessions WHERE status = 'open'").fetchone()[0]
+    ai_approved, manual_approved = totals["ai_approved"] or 0, totals["manual_approved"] or 0
+    return {
+        "events": totals["total"] or 0,
+        "approved": ai_approved + manual_approved,
+        "ai_approved": ai_approved,
+        "manual_approved": manual_approved,
+        "denied": totals["denied"] or 0,
+        "pending": totals["pending"] or 0,
+        "authorized_exits": totals["authorized"] or 0,
+        "open_sessions": open_sessions,
+    }
 
 
 @app.get("/api/v1/events/search")
@@ -316,6 +507,7 @@ def search_events(
     plate: str = Query("", max_length=30),
     start: datetime | None = None, end: datetime | None = None,
     limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+    _: StaffUser = Depends(active_user),
 ) -> dict:
     for value in (start, end):
         if value is not None and value.utcoffset() is None:
@@ -323,7 +515,7 @@ def search_events(
     if start and end and start > end:
         raise HTTPException(422, "Thời gian bắt đầu phải trước thời gian kết thúc")
     conditions, values = [], []
-    normalized = "".join(character for character in plate.upper() if character.isalnum())
+    normalized = normalize_plate_input(plate)
     if normalized:
         conditions.append("instr(UPPER(REPLACE(REPLACE(REPLACE(COALESCE(plate_number, ''), '-', ''), '.', ''), ' ', '')), ?) > 0")
         values.append(normalized)
@@ -337,68 +529,62 @@ def search_events(
     with get_connection() as connection:
         total = connection.execute("SELECT COUNT(*) FROM access_events" + where, values).fetchone()[0]
         rows = connection.execute("SELECT * FROM access_events" + where + " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
-        items = [dict(row) | {"evidence_url": f"/evidence/{row['evidence_path']}" if row["evidence_path"] else None} for row in rows]
+        items = [dict(row) | {"evidence_url": evidence_url(row["evidence_path"])} for row in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/v1/events")
-def list_events(limit: int = 20) -> list[dict]:
+def list_events(limit: int = Query(20, ge=1, le=500), since: datetime | None = None, _: StaffUser = Depends(active_user)) -> list[dict]:
+    if since is not None and since.utcoffset() is None:
+        raise HTTPException(422, "Thời gian phải có múi giờ")
+    where, values = ("WHERE julianday(occurred_at) >= julianday(?)", [since.astimezone(timezone.utc).isoformat()]) if since else ("", [])
     with get_connection() as connection:
-        rows = connection.execute("SELECT * FROM access_events ORDER BY occurred_at DESC LIMIT ?", (min(limit, 100),)).fetchall()
-        events = []
-        for row in rows:
-            event = dict(row)
-            event["evidence_url"] = f"/evidence/{event['evidence_path']}" if event["evidence_path"] else None
-            events.append(event)
-        return events
+        rows = connection.execute(f"SELECT * FROM access_events {where} ORDER BY occurred_at DESC LIMIT ?", [*values, limit]).fetchall()
+        return [dict(row) | {"evidence_url": evidence_url(row["evidence_path"])} for row in rows]
 
 
 @app.get("/api/v1/sessions/recent")
-def recent_gate_sessions(limit: int = 6) -> list[dict]:
+def recent_gate_sessions(limit: int = Query(6, ge=1, le=20), _: StaffUser = Depends(active_user)) -> list[dict]:
     """Dữ liệu đối chiếu trực quan giữa bằng chứng lúc vào và lúc ra."""
     with get_connection() as connection:
         rows = connection.execute(
             """
             SELECT gate_sessions.*, entry_event.decision AS entry_decision,
-                   exit_event.decision AS exit_decision, exit_event.reason AS exit_reason
+                   exit_event.decision AS exit_decision, exit_event.reason AS exit_reason,
+                   exit_event.authorization_id AS exit_authorization_id
             FROM gate_sessions
             LEFT JOIN access_events AS entry_event ON entry_event.id = gate_sessions.entry_event_id
             LEFT JOIN access_events AS exit_event ON exit_event.id = gate_sessions.exit_event_id
             ORDER BY COALESCE(gate_sessions.exited_at, gate_sessions.entered_at) DESC
             LIMIT ?
             """,
-            (min(limit, 20),),
+            (limit,),
         ).fetchall()
-        sessions = []
-        for row in rows:
-            session = dict(row)
-            session["entry_evidence_url"] = f"/evidence/{session['entry_evidence_path']}" if session["entry_evidence_path"] else None
-            session["exit_evidence_url"] = f"/evidence/{session['exit_evidence_path']}" if session["exit_evidence_path"] else None
-            sessions.append(session)
-        return sessions
+        return [dict(row) | {"entry_evidence_url": evidence_url(row["entry_evidence_path"]), "exit_evidence_url": evidence_url(row["exit_evidence_path"])} for row in rows]
 
+
+# ---------- Dữ liệu huấn luyện ----------
 
 @app.get("/api/v1/dataset/samples")
-def list_training_samples(limit: int = 60) -> list[dict]:
+def list_training_samples(limit: int = Query(60, ge=1, le=100), _: StaffUser = Depends(active_user)) -> list[dict]:
     with get_connection() as connection:
-        rows = connection.execute(
-            "SELECT * FROM training_samples ORDER BY created_at DESC LIMIT ?", (min(limit, 100),)
-        ).fetchall()
+        rows = connection.execute("SELECT * FROM training_samples ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [{**dict(row), "image_url": f"/training-data/{row['image_path']}"} for row in rows]
 
 
 @app.post("/api/v1/dataset/samples")
-async def add_training_sample(image: UploadFile = File(...), plate_label: str = Form("")) -> dict:
-    if not image.content_type or not image.content_type.startswith("image/"):
-        raise HTTPException(415, "Chỉ hỗ trợ tệp hình ảnh")
+async def add_training_sample(image: UploadFile = File(...), plate_label: str = Form("", max_length=20), _: StaffUser = Depends(active_user)) -> dict:
+    image_data = await read_image_upload(image)
+    ensure_decodable(image_data)
     suffix = Path(image.filename or "sample.jpg").suffix.lower() or ".jpg"
     if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
         suffix = ".jpg"
     sample_id = str(uuid4())
     filename = f"{sample_id}{suffix}"
-    (TRAINING_DIRECTORY / filename).write_bytes(await image.read())
-    cleaned_label = plate_label.strip().upper()
-    now = datetime.now(timezone.utc).isoformat()
+    TRAINING_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (TRAINING_DIRECTORY / filename).write_bytes(image_data)
+    cleaned_label = normalize_plate_input(plate_label)
+    now = now_iso()
     status = "labeled" if cleaned_label else "unlabeled"
     with get_connection() as connection:
         connection.execute(
@@ -409,14 +595,14 @@ async def add_training_sample(image: UploadFile = File(...), plate_label: str = 
 
 
 @app.patch("/api/v1/dataset/samples/{sample_id}")
-async def label_training_sample(sample_id: str, plate_label: str = Form(...)) -> dict:
-    cleaned_label = plate_label.strip().upper()
+async def label_training_sample(sample_id: str, plate_label: str = Form(..., max_length=20), _: StaffUser = Depends(active_user)) -> dict:
+    cleaned_label = normalize_plate_input(plate_label)
     if not cleaned_label:
         raise HTTPException(422, "Hãy nhập biển số để gán nhãn")
     with get_connection() as connection:
         result = connection.execute(
             "UPDATE training_samples SET plate_label = ?, status = 'labeled', updated_at = ? WHERE id = ?",
-            (cleaned_label, datetime.now(timezone.utc).isoformat(), sample_id),
+            (cleaned_label, now_iso(), sample_id),
         )
         if result.rowcount == 0:
             raise HTTPException(404, "Không tìm thấy ảnh dữ liệu")
@@ -425,16 +611,14 @@ async def label_training_sample(sample_id: str, plate_label: str = Form(...)) ->
 
 @app.get("/api/v1/model/status")
 def model_status() -> dict:
+    """Trạng thái mô hình; công khai để kiểm tra nhanh sau khi cài đặt (không chứa dữ liệu cá nhân)."""
     with get_connection() as connection:
         dataset = connection.execute(
             "SELECT COUNT(*) AS total, SUM(status = 'labeled') AS labeled FROM training_samples"
         ).fetchone()
-        latest_event = connection.execute(
-            "SELECT plate_confidence, face_confidence, occurred_at FROM access_events ORDER BY occurred_at DESC LIMIT 1"
-        ).fetchone()
-    detector_model = Path("models/plate_best.pt")
-    character_model = Path("models/chars_best.pt")
-    trained_model = Path("models/license_plate.pt")
+    detector_model = MODELS_DIRECTORY / "plate_best.pt"
+    character_model = MODELS_DIRECTORY / "chars_best.pt"
+    trained_model = MODELS_DIRECTORY / "license_plate.pt"
     custom_model = detector_model.is_file() or trained_model.is_file()
     if trained_model.is_file() and character_model.is_file():
         model_name = "license_plate.pt + chars_best.pt (detector đã train)"
@@ -447,7 +631,7 @@ def model_status() -> dict:
     vlm_status = get_vision_service().vlm.status() if vision_service is not None else vlm_status_reader.status()
     if vlm_status["available"]:
         model_name = f"{model_name} + {vlm_status['model']} (VLM dự phòng)"
-    metrics_path = Path("data/model_metrics.json")
+    metrics_path = config.data_directory() / "model_metrics.json"
     try:
         evaluation = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else {}
     except (OSError, json.JSONDecodeError):
@@ -462,6 +646,7 @@ def model_status() -> dict:
             "recall": evaluation.get("recall"),
             "map50": evaluation.get("map50"),
         },
-        "latest_confidence": dict(latest_event) if latest_event else None,
+        "face_match_threshold": config.FACE_MATCH_THRESHOLD,
+        "ocr_min_char_confidence": config.OCR_MIN_CHAR_CONFIDENCE,
         "vlm": vlm_status,
     }

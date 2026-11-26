@@ -1,5 +1,6 @@
 """Phát hiện và đối chiếu khuôn mặt bằng FaceNet trên CPU."""
 
+import threading
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -20,6 +21,8 @@ class FaceService:
         self.device = "cpu"
         self.detector = MTCNN(keep_all=True, device=self.device, min_face_size=40)
         self.encoder = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
+        # API gọi dịch vụ trong threadpool; mỗi lúc chỉ một lượt suy luận để tránh tranh CPU.
+        self._lock = threading.Lock()
 
     @staticmethod
     def _open_image(image_data: bytes) -> Image.Image:
@@ -36,6 +39,10 @@ class FaceService:
         thao tác đăng ký chỉ cần một khuôn mặt tốt nhất.
         """
         image = self._open_image(image_data)
+        with self._lock:
+            return self._extract_all(image)
+
+    def _extract_all(self, image: Image.Image) -> list[FaceData]:
         boxes, probabilities = self.detector.detect(image)
         if boxes is None or probabilities is None:
             raise ValueError("Không phát hiện được khuôn mặt rõ trong ảnh")
@@ -57,7 +64,8 @@ class FaceService:
     def detect(self, image_data: bytes) -> dict:
         """Phát hiện nhanh vị trí khuôn mặt để vẽ trực tiếp trên giao diện."""
         image = self._open_image(image_data)
-        boxes, probabilities = self.detector.detect(image)
+        with self._lock:
+            boxes, probabilities = self.detector.detect(image)
         faces = []
         if boxes is not None and probabilities is not None:
             for box, confidence in zip(boxes, probabilities):

@@ -39,6 +39,7 @@ class RecognitionResult(BaseModel):
     face_detection_confidence: float | None = None
     face_similarity: float | None = None
     plate_source: Literal["ocr", "vlm"] | None = None
+    authorization_id: str | None = None
 
 
 class ManualGateEventRequest(BaseModel):
@@ -46,16 +47,18 @@ class ManualGateEventRequest(BaseModel):
 
     direction: Literal["entry", "exit"] = "entry"
     exception_type: Literal["pedestrian", "emergency", "camera_failure", "security_override"]
-    operator_name: str = Field(default="Bảo vệ cổng", min_length=2, max_length=120)
+    # Bỏ qua: người xử lý lấy từ tài khoản đăng nhập. Giữ trường để client cũ không lỗi.
+    operator_name: str | None = Field(default=None, max_length=120)
     note: str | None = Field(default=None, max_length=300)
 
 
 class ExitReviewResolution(BaseModel):
     action: Literal["approve", "reject"]
-    operator_name: str = Field(min_length=2, max_length=120)
+    # Bỏ qua: người xử lý lấy từ tài khoản đăng nhập. Giữ trường để client cũ không lỗi.
+    operator_name: str | None = Field(default=None, max_length=120)
     reason: str = Field(min_length=3, max_length=300)
 
-    @field_validator("operator_name", "reason", mode="before")
+    @field_validator("reason", mode="before")
     @classmethod
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value

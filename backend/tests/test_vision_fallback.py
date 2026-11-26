@@ -23,7 +23,7 @@ class FakeVlm:
         return VlmReading(self.plate, self.plate or "???", 1500.0)
 
 
-def make_service(ocr_text, detections, vlm):
+def make_service(ocr_text, detections, vlm, min_confidence=0.9):
     service = VisionService.__new__(VisionService)  # bỏ qua việc nạp model .pt
     service.detector_path = Path("license_plate.pt")
     service.character_path = Path("chars_best.pt")
@@ -31,7 +31,7 @@ def make_service(ocr_text, detections, vlm):
     service.uses_plate_model = True
     service.vlm = vlm
     service._yolo_lock = threading.Lock()
-    service._detect_and_read = lambda image: (detections, ocr_text, 0.8 if ocr_text else None)
+    service._detect_and_read = lambda image: (detections, ocr_text, 0.8 if ocr_text else None, min_confidence if ocr_text else None)
     return service
 
 
@@ -69,3 +69,22 @@ def test_vlm_unusable_keeps_ocr_result():
 def test_invalid_image_raises():
     with pytest.raises(ValueError):
         make_service(None, BOX, FakeVlm()).analyze_image(b"not an image")
+
+
+def test_low_confidence_valid_ocr_asks_vlm_and_prefers_it():
+    vlm = FakeVlm("51H09488")
+    result = make_service("51H09468", BOX, vlm, min_confidence=0.46).analyze_image(IMAGE_BYTES)
+    assert vlm.calls == 1 and result.plate_text == "51H09488" and result.plate_source == "vlm"
+    assert result.ocr_text == "51H09468"
+
+
+def test_confident_valid_ocr_skips_vlm():
+    vlm = FakeVlm("51H09488")
+    result = make_service("51H09468", BOX, vlm, min_confidence=0.8).analyze_image(IMAGE_BYTES)
+    assert vlm.calls == 0 and result.plate_text == "51H09468"
+
+
+def test_low_confidence_ocr_kept_when_vlm_cannot_read():
+    vlm = FakeVlm(plate=None)
+    result = make_service("51H09468", BOX, vlm, min_confidence=0.46).analyze_image(IMAGE_BYTES)
+    assert vlm.calls == 1 and result.plate_text == "51H09468" and result.plate_source == "ocr"
