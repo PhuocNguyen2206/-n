@@ -176,4 +176,5 @@ sequenceDiagram
 - Thu thập ảnh thật tại cổng trường (có sự đồng ý) để đo lại cả biển số và khuôn mặt; thử mũ bảo hiểm, khẩu trang, ban đêm.
 - Xe mượn / ủy quyền lấy xe hộ: chủ xe đăng ký trước người được lấy xe (tích hợp hệ thống sinh viên), để người mượn ra cổng không cần bảo vệ duyệt tay.
 - Điều khiển thanh chắn thật (IoT), chạy hai làn đồng thời, triển khai HTTPS.
+- Lưu lịch sử đăng nhập/đăng xuất của bảo vệ và thống kê theo ca trực (ai trực, bao lâu, xử lý bao nhiêu lượt).
 - Thử ArcFace (đã có so sánh trong `02_Ket_qua_so_sanh_model`) hoặc tinh chỉnh ngưỡng theo dữ liệu thật.
