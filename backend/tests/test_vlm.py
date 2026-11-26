@@ -93,3 +93,39 @@ def test_busy_reader_skips_instead_of_queueing():
     finally:
         reader._busy.release()
     assert calls["generate"] == 0
+
+
+def test_degenerate_output_resets_runner_and_retries_png():
+    """Ollama đôi khi kẹt ở chuỗi "8888...": phải gỡ model rồi thử lại."""
+    seen = {"generate": 0, "unload": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "qwen2.5vl:3b"}]})
+        body = json.loads(request.content)
+        if body.get("keep_alive") == 0 and "prompt" not in body:
+            seen["unload"] += 1
+            return httpx.Response(200, json={"done_reason": "unload"})
+        seen["generate"] += 1
+        text = "8" * 24 if seen["generate"] == 1 else "51F-795.12"
+        return httpx.Response(200, json={"response": text})
+
+    reading = make_reader(handler).read_plate(IMAGE)
+    assert reading.plate == "51F79512"
+    assert seen == {"generate": 2, "unload": 1}
+
+
+def test_degenerate_twice_returns_no_plate():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "qwen2.5vl:3b"}]})
+        return httpx.Response(200, json={"response": "8" * 24})
+
+    reading = make_reader(handler).read_plate(IMAGE)
+    assert reading is not None and reading.plate is None
+
+
+@pytest.mark.parametrize("text,bad", [("8" * 24, True), ("888888888888", True), ("59F113860", False), ("51F-888.88", False), ("", False)])
+def test_is_degenerate_output(text, bad):
+    from app.services.vlm import is_degenerate_output
+    assert is_degenerate_output(text) is bad

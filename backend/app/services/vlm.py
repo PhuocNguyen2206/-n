@@ -44,6 +44,14 @@ def normalize_plate(text: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (text or "").upper())
 
 
+_DEGENERATE_PATTERN = re.compile(r"(.)\1{11,}")
+
+
+def is_degenerate_output(text: str | None) -> bool:
+    """Một ký tự lặp từ 12 lần trở lên: biển số thật không bao giờ như vậy."""
+    return bool(text) and bool(_DEGENERATE_PATTERN.search(text))
+
+
 def _env_flag(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -107,6 +115,26 @@ class VlmPlateReader:
     def is_available(self) -> bool:
         return bool(self.status().get("available"))
 
+    def _generate(self, image_b64: str) -> str:
+        payload = {
+            "model": self.model,
+            "prompt": PROMPT,
+            "images": [image_b64],
+            "stream": False,
+            "keep_alive": os.getenv("VLM_KEEP_ALIVE", "30m"),
+            "options": {"temperature": 0, "num_predict": 24},
+        }
+        response = self._client.post(f"{self.host}/api/generate", json=payload, timeout=self.timeout)
+        response.raise_for_status()
+        return str(response.json().get("response", "")).strip()
+
+    def reset_runner(self) -> None:
+        """Gỡ model khỏi bộ nhớ (keep_alive=0); lượt gọi sau Ollama tự nạp lại."""
+        try:
+            self._client.post(f"{self.host}/api/generate", json={"model": self.model, "keep_alive": 0}, timeout=self.timeout)
+        except httpx.HTTPError as error:
+            logger.warning("Không gỡ được model VLM: %s", error)
+
     # ---------- đọc biển ----------
     def read_plate(self, image: np.ndarray, wait: bool = False) -> VlmReading | None:
         """Đọc biển số trong ảnh BGR. Trả ``None`` nếu VLM không dùng được hoặc đang bận."""
@@ -120,22 +148,23 @@ class VlmPlateReader:
             scale = 1024 / max(height, width)
             if scale < 1:
                 image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            ok, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])
-            if not ok:
-                return None
-            payload = {
-                "model": self.model,
-                "prompt": PROMPT,
-                "images": [base64.b64encode(buffer.tobytes()).decode("ascii")],
-                "stream": False,
-                "keep_alive": os.getenv("VLM_KEEP_ALIVE", "30m"),
-                "options": {"temperature": 0, "num_predict": 24},
-            }
             started = time.perf_counter()
-            response = self._client.post(f"{self.host}/api/generate", json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            raw_text = str(response.json().get("response", "")).strip()
+            raw_text = ""
+            # Một số ảnh làm runner của Ollama rơi vào trạng thái hỏng: từ đó mọi
+            # câu trả lời đều là "8888..." cho tới khi model được nạp lại. Phát hiện
+            # chuỗi lặp bất thường, gỡ model khỏi bộ nhớ rồi thử lại bằng PNG.
+            for extension, params in ((".jpg", [cv2.IMWRITE_JPEG_QUALITY, 92]), (".png", [])):
+                ok, buffer = cv2.imencode(extension, image, params)
+                if not ok:
+                    continue
+                raw_text = self._generate(base64.b64encode(buffer.tobytes()).decode("ascii"))
+                if not is_degenerate_output(raw_text):
+                    break
+                logger.warning("VLM trả chuỗi lặp bất thường (%r); nạp lại model", raw_text[:30])
+                self.reset_runner()
             elapsed_ms = (time.perf_counter() - started) * 1000
+            if is_degenerate_output(raw_text):
+                return VlmReading(None, raw_text, round(elapsed_ms, 1))
             plate = normalize_plate(raw_text)
             return VlmReading(plate if is_valid_vn_plate(plate) else None, raw_text, round(elapsed_ms, 1))
         except (httpx.HTTPError, ValueError) as error:
