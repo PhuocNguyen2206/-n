@@ -125,16 +125,40 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
     if (selectedEvent) { setPhotoError(false); evidenceDialog.current?.showModal(); }
   }, [selectedEvent]);
 
+  // Trình duyệt chỉ trả mã và tên thiết bị sau khi người dùng cho phép dùng camera,
+  // nên phải xin quyền (mở rồi đóng ngay một luồng) trước khi liệt kê.
+  const listCameras = async (): Promise<CameraDevice[]> => {
+    const videoInputs = async () => (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "videoinput");
+    let devices = await videoInputs();
+    if (devices.some(device => !device.deviceId || !device.label)) {
+      const probe = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      probe.getTracks().forEach(track => track.stop());
+      devices = await videoInputs();
+    }
+    return devices.map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Camera ${index + 1}` }));
+  };
+
+  const needTwoCameras = (devices: CameraDevice[]) => devices.length === 1
+    ? `Máy chỉ nhận 1 webcam (${devices[0].label}). Cần hai webcam riêng: một cho khuôn mặt, một cho biển số.`
+    : "Chưa tìm thấy camera. Kiểm tra dây cắm webcam rồi bấm Tìm camera.";
+
+  const cameraErrorMessage = (error: unknown) => {
+    const name = error instanceof DOMException ? error.name : "";
+    if (name === "NotAllowedError") return "Trình duyệt đang chặn camera. Bấm biểu tượng cạnh thanh địa chỉ, cho phép Camera rồi tải lại trang.";
+    if (name === "NotReadableError") return "Không mở được webcam. Đóng ứng dụng khác đang dùng camera (Zalo, Zoom, Camera…) rồi thử lại.";
+    if (name === "NotFoundError") return "Chưa tìm thấy camera. Kiểm tra dây cắm webcam rồi bấm Tìm camera.";
+    return error instanceof Error ? error.message : "Không thể mở camera. Hãy kiểm tra quyền Camera của trình duyệt.";
+  };
+
   const refreshCameraDevices = async () => {
     try {
-      const devices = (await navigator.mediaDevices.enumerateDevices())
-        .filter(device => device.kind === "videoinput")
-        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Camera ${index + 1}` }));
+      const devices = await listCameras();
       setCameraDevices(devices);
-      if (!faceDeviceId && devices[0]) setFaceDeviceId(devices[0].deviceId);
-      if (!plateDeviceId && devices[1]) setPlateDeviceId(devices[1].deviceId);
-      setLiveResult(devices.length ? "Đã tìm thấy camera. Chọn một webcam khuôn mặt và một webcam biển số." : "Chưa tìm thấy camera. Kiểm tra kết nối webcam rồi tìm lại.");
-    } catch { setLiveResult("Không thể đọc danh sách camera. Hãy cho phép quyền Camera rồi thử lại."); }
+      const known = (id: string) => devices.some(device => device.deviceId === id);
+      setFaceDeviceId(previous => known(previous) ? previous : devices[0]?.deviceId || "");
+      setPlateDeviceId(previous => known(previous) ? previous : devices[1]?.deviceId || "");
+      setLiveResult(devices.length >= 2 ? `Đã tìm thấy ${devices.length} camera. Chọn một webcam khuôn mặt và một webcam biển số.` : needTwoCameras(devices));
+    } catch (error) { setLiveResult(cameraErrorMessage(error)); }
   };
 
   const frameFromVideo = (video: HTMLVideoElement, name: string) => new Promise<File>((resolve, reject) => {
@@ -243,11 +267,13 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
     if (cameraStarting || liveCameraOn) return;
     setCameraStarting(true);
     try {
-      const devices = cameraDevices.length ? cameraDevices : (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "videoinput").map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Camera ${index + 1}` }));
-      if (devices.length < 2) throw new Error("Cần kết nối hai webcam riêng: khuôn mặt và biển số.");
+      // Luôn liệt kê lại: webcam có thể vừa được cắm hoặc rút.
+      const devices = await listCameras();
       setCameraDevices(devices);
-      const selectedFace = faceDeviceId || devices[0].deviceId;
-      const selectedPlate = plateDeviceId || devices[1].deviceId;
+      if (devices.length < 2) throw new Error(needTwoCameras(devices));
+      const known = (id: string) => devices.some(device => device.deviceId === id);
+      const selectedFace = known(faceDeviceId) ? faceDeviceId : devices[0].deviceId;
+      const selectedPlate = known(plateDeviceId) ? plateDeviceId : devices.find(device => device.deviceId !== selectedFace)!.deviceId;
       if (selectedPlate === selectedFace) throw new Error("Hãy chọn hai webcam khác nhau cho khuôn mặt và biển số.");
       setFaceDeviceId(selectedFace); setPlateDeviceId(selectedPlate);
       const faceStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: selectedFace }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
@@ -262,7 +288,7 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
       setLiveResult("Chế độ tự động đang hoạt động: AI liên tục quét mặt, biển số và kiểm tra cổng.");
     } catch (error) {
       stopLiveCamera();
-      setLiveResult(error instanceof Error ? error.message : "Không thể mở camera. Hãy kiểm tra quyền Camera của trình duyệt.");
+      setLiveResult(cameraErrorMessage(error));
     } finally { setCameraStarting(false); }
   };
 
