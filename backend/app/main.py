@@ -2,7 +2,7 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -230,14 +230,6 @@ def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes]
         entry_evidence_url=evidence_url(session["entry_evidence_path"]), entered_at=session["entered_at"])
 
 
-def expire_session_authorizations(connection, session_id: str, used_authorization: str | None = None) -> None:
-    """Phiên đã đóng thì mọi ủy quyền còn lại của phiên hết hiệu lực."""
-    connection.execute(
-        "UPDATE exit_authorizations SET status = 'expired', closed_at = ? WHERE session_id = ? AND status = 'active' AND id IS NOT ?",
-        (now_iso(), session_id, used_authorization),
-    )
-
-
 @app.get("/api/v1/gate/exit-reviews/pending")
 def pending_exit_reviews(_: StaffUser = Depends(active_user)) -> list[dict]:
     with get_connection() as connection:
@@ -266,33 +258,14 @@ def resolve_exit_review(review_id: str, request: ExitReviewResolution, user: Sta
         connection.execute("UPDATE exit_reviews SET status = ? WHERE id = ?", ("approved" if approved else "rejected", review_id))
         if approved:
             connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ? AND status = 'open'", (now, event_id, review["evidence_path"], review["session_id"]))
-            expire_session_authorizations(connection, review["session_id"])
         return RecognitionResult(event_id=event_id, decision=decision, reason=reason, plate_number=review["plate_number"], evidence_url=evidence_url(review["evidence_path"]), captured_at=review["occurred_at"])
 
 
-def match_exit(connection, session, faces) -> tuple[float, dict | None, float, bool]:
-    """Độ giống lớn nhất với người lúc vào; nếu không khớp thì xét ủy quyền còn hiệu lực.
-
-    Trả về (độ giống với người lúc vào, ủy quyền khớp, độ giống với ủy quyền tốt nhất, có ủy quyền nào không).
-    """
+def entry_face_score(connection, session, faces) -> float:
+    """Độ giống lớn nhất giữa mọi mặt lúc ra và mọi mặt đã lưu lúc vào của phiên."""
     face_service_instance = get_face_service()
     entry_faces = connection.execute("SELECT embedding FROM gate_session_faces WHERE session_id = ?", (session["id"],)).fetchall()
-    score = max((face_service_instance.similarity(current.embedding, json.loads(saved["embedding"])) for current in faces for saved in entry_faces), default=0.0)
-    if score >= config.FACE_MATCH_THRESHOLD:
-        return score, None, 0.0, False
-    authorizations = connection.execute(
-        "SELECT * FROM exit_authorizations WHERE session_id = ? AND status = 'active' AND julianday(valid_until) > julianday(?)",
-        (session["id"], now_iso()),
-    ).fetchall()
-    best, best_score = None, 0.0
-    for authorization in authorizations:
-        embedding = json.loads(authorization["embedding"])
-        candidate = max(face_service_instance.similarity(current.embedding, embedding) for current in faces)
-        if candidate > best_score:
-            best, best_score = dict(authorization), candidate
-    if best is not None and best_score >= config.FACE_MATCH_THRESHOLD:
-        return score, best, best_score, True
-    return score, None, best_score, bool(authorizations)
+    return max((face_service_instance.similarity(current.embedding, json.loads(saved["embedding"])) for current in faces for saved in entry_faces), default=0.0)
 
 
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
@@ -329,7 +302,7 @@ async def verify_gate_image(
     face_confidence = max((face.confidence for face in faces), default=None)
     event_id = str(uuid4())
     decision, reason, score = "denied", "Không đọc được biển số xe", None
-    evidence_path, session, authorization = None, None, None
+    evidence_path, session = None, None
     captured_at = now_iso()
     with get_connection() as connection:
         # Khóa ghi ngay từ đầu: hai khung hình đến cùng lúc không thể tạo hai phiên
@@ -363,16 +336,11 @@ async def verify_gate_image(
             if not session:
                 reason = "Không có lượt vào đang mở của biển số này"
             else:
-                score, authorization, authorization_score, has_authorizations = match_exit(connection, session, faces)
+                score = entry_face_score(connection, session, faces)
                 if score >= config.FACE_MATCH_THRESHOLD:
                     decision, reason = "approved", "Khuôn mặt khớp với người đã vào cùng xe"
-                elif authorization:
-                    decision = "approved"
-                    reason = (f"Người được ủy quyền lấy xe: {authorization['borrower_name']} ({authorization['borrower_code']}) · "
-                              f"Chủ xe: {authorization['owner_name']} · Độ giống {authorization_score:.2f}")
-                    score = authorization_score
                 else:
-                    reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào" + (" hoặc người được ủy quyền" if has_authorizations else "")
+                    reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào"
         if direction == "exit" and plate and decision == "denied":
             review = prepare_exit_review(connection, plate, reason, frames, score, user.username)
             if review:
@@ -380,9 +348,9 @@ async def verify_gate_image(
         if plate and faces and frames:
             evidence_path = save_evidence(event_id, direction, frames)
         connection.execute(
-            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path, plate_source, authorization_id, operator_username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, person_id, decision, reason, plate_confidence, face_confidence, evidence_path, plate_source, operator_username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event_id, captured_at, direction, plate, None, decision, reason, plate_confidence, score, evidence_path,
-             plate_source if plate else None, authorization["id"] if authorization else None, user.username),
+             plate_source if plate else None, user.username),
         )
         if plate and faces and direction == "entry" and decision == "approved":
             session_id = str(uuid4())
@@ -390,9 +358,6 @@ async def verify_gate_image(
             connection.executemany("INSERT INTO gate_session_faces (session_id, embedding, confidence) VALUES (?, ?, ?)", [(session_id, json.dumps(face.embedding), face.confidence) for face in faces])
         if plate and direction == "exit" and decision == "approved" and session:
             connection.execute("UPDATE gate_sessions SET status = 'closed', exited_at = ?, exit_event_id = ?, exit_evidence_path = ? WHERE id = ?", (captured_at, event_id, evidence_path, session["id"]))
-            if authorization:
-                connection.execute("UPDATE exit_authorizations SET status = 'used', used_event_id = ?, closed_at = ? WHERE id = ?", (event_id, captured_at, authorization["id"]))
-            expire_session_authorizations(connection, session["id"], authorization["id"] if authorization else None)
     return RecognitionResult(
         event_id=event_id, decision=decision, reason=reason,
         plate_number=plate, face_detected=bool(faces),
@@ -401,77 +366,7 @@ async def verify_gate_image(
         face_detection_confidence=face_confidence,
         face_similarity=score if plate else None,
         plate_source=plate_source if plate else None,
-        authorization_id=authorization["id"] if authorization else None,
     )
-
-
-# ---------- Ủy quyền lấy xe hộ (xe mượn) ----------
-
-def _authorization_view(row) -> dict:
-    item = {key: row[key] for key in row.keys() if key != "embedding"}
-    if item["status"] == "active":
-        expired = datetime.fromisoformat(item["valid_until"]) <= datetime.now(timezone.utc)
-        if expired or row["session_status"] != "open":
-            item["status"] = "expired"
-    return item
-
-
-@app.post("/api/v1/authorizations", status_code=201)
-async def create_authorization(
-    plate_number: str = Form(..., max_length=20), owner_name: str = Form(..., max_length=120),
-    borrower_name: str = Form(..., max_length=120), borrower_code: str = Form(..., max_length=30),
-    valid_hours: float = Form(4), note: str = Form("", max_length=300), face_image: UploadFile = File(...),
-    user: StaffUser = Depends(active_user),
-) -> dict:
-    """Chủ xe đã vào bãi nhờ người khác lấy xe ra; bảo vệ ghi nhận khuôn mặt người lấy hộ."""
-    plate = normalize_plate_input(plate_number)
-    owner, borrower, code = owner_name.strip(), borrower_name.strip(), borrower_code.strip().upper()
-    if len(plate) < 5:
-        raise HTTPException(422, "Biển số không hợp lệ")
-    if len(owner) < 2 or len(borrower) < 2 or len(code) < 3:
-        raise HTTPException(422, "Cần tên chủ xe, tên và mã số (MSSV/CCCD) của người lấy xe hộ")
-    if not 0 < valid_hours <= config.MAX_AUTHORIZATION_HOURS:
-        raise HTTPException(422, f"Thời hạn ủy quyền từ 0 đến {config.MAX_AUTHORIZATION_HOURS:g} giờ")
-    image_data = await read_image_upload(face_image)
-    ensure_decodable(image_data)
-    try:
-        face = await run_in_threadpool(get_face_service().extract, image_data)
-    except ValueError as error:
-        raise HTTPException(422, "Ảnh người lấy xe hộ không có khuôn mặt rõ") from error
-    now = datetime.now(timezone.utc)
-    authorization_id = str(uuid4())
-    with get_connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        session = connection.execute("SELECT id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
-        if session is None:
-            raise HTTPException(404, "Biển số này không có lượt vào đang mở; chỉ ủy quyền cho xe đang ở trong bãi")
-        connection.execute(
-            "INSERT INTO exit_authorizations (id, plate_number, session_id, owner_name, borrower_name, borrower_code, embedding, face_confidence, note, created_by, created_at, valid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (authorization_id, plate, session["id"], owner, borrower, code, json.dumps(face.embedding), face.confidence,
-             note.strip() or None, user.username, now.isoformat(), (now + timedelta(hours=valid_hours)).isoformat()),
-        )
-        row = connection.execute("SELECT a.*, s.status AS session_status FROM exit_authorizations a JOIN gate_sessions s ON s.id = a.session_id WHERE a.id = ?", (authorization_id,)).fetchone()
-    return _authorization_view(row)
-
-
-@app.get("/api/v1/authorizations")
-def list_authorizations(active_only: bool = False, limit: int = Query(50, ge=1, le=200), _: StaffUser = Depends(active_user)) -> list[dict]:
-    with get_connection() as connection:
-        rows = connection.execute(
-            "SELECT a.*, s.status AS session_status FROM exit_authorizations a JOIN gate_sessions s ON s.id = a.session_id ORDER BY a.created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    items = [_authorization_view(row) for row in rows]
-    return [item for item in items if item["status"] == "active"] if active_only else items
-
-
-@app.post("/api/v1/authorizations/{authorization_id}/revoke")
-def revoke_authorization(authorization_id: str, user: StaffUser = Depends(active_user)) -> dict:
-    with get_connection() as connection:
-        result = connection.execute("UPDATE exit_authorizations SET status = 'revoked', closed_at = ? WHERE id = ? AND status = 'active'", (now_iso(), authorization_id))
-        if result.rowcount == 0:
-            raise HTTPException(409, "Ủy quyền không còn hiệu lực hoặc không tồn tại")
-    return {"id": authorization_id, "status": "revoked", "revoked_by": user.username}
 
 
 # ---------- Thống kê và nhật ký ----------
@@ -485,7 +380,7 @@ def dashboard_summary(since: datetime | None = None, _: StaffUser = Depends(acti
     with get_connection() as connection:
         totals = connection.execute(
             f"SELECT COUNT(*) AS total, SUM(decision = 'approved') AS ai_approved, SUM(decision = 'manual_approved') AS manual_approved, "
-            f"SUM(decision = 'denied') AS denied, SUM(decision = 'manual_review') AS pending, SUM(authorization_id IS NOT NULL) AS authorized "
+            f"SUM(decision = 'denied') AS denied, SUM(decision = 'manual_review') AS pending "
             f"FROM access_events {where}", values,
         ).fetchone()
         open_sessions = connection.execute("SELECT COUNT(*) FROM gate_sessions WHERE status = 'open'").fetchone()[0]
@@ -497,7 +392,6 @@ def dashboard_summary(since: datetime | None = None, _: StaffUser = Depends(acti
         "manual_approved": manual_approved,
         "denied": totals["denied"] or 0,
         "pending": totals["pending"] or 0,
-        "authorized_exits": totals["authorized"] or 0,
         "open_sessions": open_sessions,
     }
 
@@ -550,8 +444,7 @@ def recent_gate_sessions(limit: int = Query(6, ge=1, le=20), _: StaffUser = Depe
         rows = connection.execute(
             """
             SELECT gate_sessions.*, entry_event.decision AS entry_decision,
-                   exit_event.decision AS exit_decision, exit_event.reason AS exit_reason,
-                   exit_event.authorization_id AS exit_authorization_id
+                   exit_event.decision AS exit_decision, exit_event.reason AS exit_reason
             FROM gate_sessions
             LEFT JOIN access_events AS entry_event ON entry_event.id = gate_sessions.entry_event_id
             LEFT JOIN access_events AS exit_event ON exit_event.id = gate_sessions.exit_event_id

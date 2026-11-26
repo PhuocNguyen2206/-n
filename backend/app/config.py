@@ -27,8 +27,6 @@ OCR_MIN_CHAR_CONFIDENCE = _float("OCR_MIN_CHAR_CONFIDENCE", 0.5)
 MAX_UPLOAD_MB = _float("MAX_UPLOAD_MB", 10)
 # Phiên đăng nhập của bảo vệ (giờ).
 SESSION_HOURS = _float("SESSION_HOURS", 12)
-# Ủy quyền lấy xe hộ có hiệu lực tối đa (giờ).
-MAX_AUTHORIZATION_HOURS = _float("MAX_AUTHORIZATION_HOURS", 24)
 # Tài khoản quản trị tạo lần đầu khi cơ sở dữ liệu chưa có tài khoản nào.
 DEFAULT_ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")

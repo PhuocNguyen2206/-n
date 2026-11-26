@@ -1,14 +1,13 @@
 """Kiểm thử API cổng xe với AI giả lập.
 
 Mỗi ảnh thử là một khối màu đơn sắc. Màu quyết định ảnh "chứa" ai hoặc biển
-số nào, nhờ vậy kiểm tra được trọn luồng vào/ra, bảo vệ duyệt, ủy quyền lấy xe
-hộ, đăng nhập và lưu ảnh mà không cần GPU, camera hay model thật. Các bài này
+số nào, nhờ vậy kiểm tra được trọn luồng vào/ra, bảo vệ duyệt,
+đăng nhập và lưu ảnh mà không cần GPU, camera hay model thật. Các bài này
 kiểm tra logic quyết định; độ chính xác nhận diện được đo riêng (LFW, tập test
 biển số).
 """
 
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -122,11 +121,6 @@ def scan(client, face, plate, direction, automatic=False):
     return response.json()
 
 
-def authorize(client, plate, borrower_face="chi", hours=4, **extra):
-    data = {"plate_number": plate, "owner_name": "Nguyễn Văn An", "borrower_name": "Trần Thị Chi", "borrower_code": "2251220999", "valid_hours": str(hours)} | extra
-    return client.post("/api/v1/authorizations", data=data, files={"face_image": ("chi.jpg", image(borrower_face), "image/jpeg")})
-
-
 def events(client):
     return client.get("/api/v1/events/search", params={"limit": 100}).json()["items"]
 
@@ -139,7 +133,7 @@ def test_protected_endpoints_require_login(env):
         assert anonymous.get("/api/v1/model/status").status_code == 200
         for method, path in [("get", "/api/v1/events"), ("get", "/api/v1/events/search"), ("get", "/api/v1/dashboard/summary"),
                              ("get", "/api/v1/sessions/recent"), ("get", "/api/v1/gate/exit-reviews/pending"),
-                             ("get", "/api/v1/authorizations"), ("get", "/evidence/x_entry.jpg"), ("post", "/api/v1/gate/manual")]:
+                             ("get", "/evidence/x_entry.jpg"), ("post", "/api/v1/gate/manual")]:
             assert getattr(anonymous, method)(path).status_code == 401, path
         files = [("images", ("a.jpg", image("an"), "image/jpeg")), ("images", ("b.jpg", image("59F113860"), "image/jpeg"))]
         assert anonymous.post("/api/v1/gate/verify", files=files, data={"direction": "entry", "paired_cameras": "true"}).status_code == 401
@@ -276,63 +270,6 @@ def test_concurrent_entries_create_one_session(client):
     assert all(result["decision"] == "approved" for result in results)
     sessions = [session for session in client.get("/api/v1/sessions/recent").json() if session["plate_number"] == "30F5204"]
     assert len(sessions) == 1 and len(events(client)) == 1
-
-
-# ---------- Ủy quyền lấy xe hộ ----------
-
-def test_authorized_borrower_can_take_bike_out_once(client):
-    scan(client, "an", "59F113860", "entry")
-    created = authorize(client, "59-F1 138.60", note="Chủ xe gọi điện xác nhận")
-    assert created.status_code == 201, created.text
-    authorization = created.json()
-    assert authorization["plate_number"] == "59F113860" and authorization["status"] == "active" and "embedding" not in authorization
-    result = scan(client, "chi", "59F113860", "exit")
-    assert result["decision"] == "approved" and result["authorization_id"] == authorization["id"]
-    assert "Trần Thị Chi" in result["reason"] and "Nguyễn Văn An" in result["reason"]
-    listed = client.get("/api/v1/authorizations").json()[0]
-    assert listed["status"] == "used" and listed["used_event_id"] == result["event_id"]
-    assert client.get("/api/v1/authorizations", params={"active_only": "true"}).json() == []
-    # Ủy quyền dùng một lần: lượt sau của cùng xe không còn áp dụng.
-    scan(client, "an", "59F113860", "entry")
-    assert scan(client, "chi", "59F113860", "exit")["decision"] == "manual_review"
-    assert client.get("/api/v1/dashboard/summary").json()["authorized_exits"] == 1
-
-
-def test_authorization_does_not_help_another_stranger(client):
-    scan(client, "an", "59F113860", "entry")
-    authorize(client, "59F113860")
-    result = scan(client, "dung", "59F113860", "exit")
-    assert result["decision"] == "manual_review" and "người được ủy quyền" in result["reason"]
-
-
-def test_authorization_only_for_bike_inside_and_needs_face(client):
-    assert authorize(client, "43A12345").status_code == 404
-    scan(client, "an", "59F113860", "entry")
-    assert authorize(client, "59F113860", borrower_face="noface").status_code == 422
-    assert authorize(client, "59F113860", hours=48).status_code == 422
-    assert authorize(client, "59F113860", borrower_code="").status_code == 422
-
-
-def test_revoked_and_expired_authorizations_are_ignored(client):
-    scan(client, "an", "59F113860", "entry")
-    revoked = authorize(client, "59F113860").json()
-    assert client.post(f"/api/v1/authorizations/{revoked['id']}/revoke").status_code == 200
-    assert client.post(f"/api/v1/authorizations/{revoked['id']}/revoke").status_code == 409
-    assert scan(client, "chi", "59F113860", "exit")["decision"] == "manual_review"
-
-    scan(client, "lan", "51F79512", "entry")
-    authorize(client, "51F79512", hours=0.0002)  # khoảng 0,7 giây
-    time.sleep(1.0)
-    assert scan(client, "chi", "51F79512", "exit")["decision"] == "manual_review"
-    statuses = {item["plate_number"]: item["status"] for item in client.get("/api/v1/authorizations").json()}
-    assert statuses == {"59F113860": "revoked", "51F79512": "expired"}
-
-
-def test_owner_exit_expires_unused_authorization(client):
-    scan(client, "an", "59F113860", "entry")
-    authorize(client, "59F113860")
-    assert scan(client, "an", "59F113860", "exit")["decision"] == "approved"
-    assert client.get("/api/v1/authorizations").json()[0]["status"] == "expired"
 
 
 # ---------- Dữ liệu đầu vào không hợp lệ ----------

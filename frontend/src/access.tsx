@@ -2,13 +2,6 @@ import { FormEvent, useEffect, useState } from "react";
 import { API, apiFetch, errorMessage } from "./api";
 
 export type StaffUser = { username: string; full_name: string; role: "admin" | "guard"; must_change_password: boolean };
-type Authorization = {
-  id: string; plate_number: string; owner_name: string; borrower_name: string; borrower_code: string; note: string | null;
-  created_by: string; created_at: string; valid_until: string; status: "active" | "used" | "expired" | "revoked"; used_event_id: string | null;
-};
-
-const statusLabel: Record<Authorization["status"], string> = { active: "Còn hiệu lực", used: "Đã lấy xe", expired: "Hết hiệu lực", revoked: "Đã hủy" };
-
 export function LoginScreen({ onLogin }: { onLogin: (user: StaffUser) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -61,89 +54,6 @@ export function ChangePasswordForm({ onDone }: { onDone: (user: StaffUser) => vo
     {message && <p className={`form-message ${message.ok ? "success" : "error"}`} role="status">{message.text}</p>}
     <button type="submit" disabled={busy}>{busy ? "Đang lưu…" : "Đổi mật khẩu"}</button>
   </form>;
-}
-
-export function AuthorizationPanel({ captureFace, cameraOn, onChanged }: { captureFace: () => Promise<File>; cameraOn: boolean; onChanged: () => void }) {
-  const [items, setItems] = useState<Authorization[]>([]);
-  const [plate, setPlate] = useState("");
-  const [owner, setOwner] = useState("");
-  const [borrower, setBorrower] = useState("");
-  const [code, setCode] = useState("");
-  const [hours, setHours] = useState("4");
-  const [note, setNote] = useState("");
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [preview, setPreview] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
-
-  const refresh = async () => {
-    try {
-      const response = await apiFetch(`${API}/authorizations?limit=50`);
-      if (response.ok) setItems(await response.json());
-    } catch { /* giữ danh sách cũ */ }
-  };
-  useEffect(() => { refresh(); const timer = window.setInterval(refresh, 15000); return () => window.clearInterval(timer); }, []);
-  useEffect(() => { if (!photo) { setPreview(""); return; } const url = URL.createObjectURL(photo); setPreview(url); return () => URL.revokeObjectURL(url); }, [photo]);
-
-  const takePhoto = async () => {
-    try { setPhoto(await captureFace()); setMessage(null); }
-    catch (error) { setMessage({ text: error instanceof Error ? error.message : "Không chụp được ảnh", ok: false }); }
-  };
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!photo) { setMessage({ text: "Cần ảnh khuôn mặt rõ của người lấy xe hộ.", ok: false }); return; }
-    setBusy(true); setMessage(null);
-    const form = new FormData();
-    form.append("plate_number", plate); form.append("owner_name", owner); form.append("borrower_name", borrower);
-    form.append("borrower_code", code); form.append("valid_hours", hours); form.append("note", note); form.append("face_image", photo);
-    try {
-      const response = await apiFetch(`${API}/authorizations`, { method: "POST", body: form });
-      if (!response.ok) throw new Error(await errorMessage(response, "Hãy kiểm tra lại thông tin ủy quyền."));
-      const created: Authorization = await response.json();
-      setMessage({ text: `Đã ủy quyền cho ${created.borrower_name} lấy xe ${created.plate_number} đến ${new Date(created.valid_until).toLocaleString("vi-VN")}.`, ok: true });
-      setPlate(""); setOwner(""); setBorrower(""); setCode(""); setNote(""); setPhoto(null);
-      refresh(); onChanged();
-    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Không lưu được ủy quyền", ok: false }); }
-    finally { setBusy(false); }
-  };
-
-  const revoke = async (item: Authorization) => {
-    if (!window.confirm(`Hủy ủy quyền lấy xe ${item.plate_number} của ${item.borrower_name}?`)) return;
-    const response = await apiFetch(`${API}/authorizations/${item.id}/revoke`, { method: "POST" });
-    if (!response.ok) setMessage({ text: await errorMessage(response, "Không hủy được ủy quyền"), ok: false });
-    refresh();
-  };
-
-  return <section className="authorization-panel">
-    <div className="access-grid">
-      <form className="access-card stack-form" onSubmit={submit}>
-        <div><p className="eyebrow">TẠO ỦY QUYỀN</p><h2>Người lấy xe hộ</h2><p>Chỉ dùng cho xe đang ở trong bãi. Bảo vệ xác minh chủ xe (gặp trực tiếp hoặc gọi điện), chụp mặt người lấy hộ. Ủy quyền dùng một lần.</p></div>
-        <label>Biển số xe<input value={plate} onChange={e => setPlate(e.target.value)} placeholder="Ví dụ: 59F1-138.60" maxLength={20} required /></label>
-        <label>Họ tên chủ xe (người gửi xe)<input value={owner} onChange={e => setOwner(e.target.value)} maxLength={120} required /></label>
-        <div className="two-columns"><label>Họ tên người lấy hộ<input value={borrower} onChange={e => setBorrower(e.target.value)} maxLength={120} required /></label>
-          <label>MSSV / CCCD người lấy hộ<input value={code} onChange={e => setCode(e.target.value)} maxLength={30} required /></label></div>
-        <div className="two-columns"><label>Hiệu lực (giờ)<input type="number" min="0.5" max="24" step="0.5" value={hours} onChange={e => setHours(e.target.value)} required /></label>
-          <label>Ghi chú<input value={note} onChange={e => setNote(e.target.value)} maxLength={300} placeholder="Ví dụ: chủ xe gọi điện xác nhận" /></label></div>
-        <div className="photo-picker">
-          {preview ? <img src={preview} alt="Ảnh khuôn mặt người lấy xe hộ" /> : <span>Chưa có ảnh khuôn mặt</span>}
-          <div><label className="file-button">Chọn ảnh từ máy<input type="file" accept="image/*" onChange={e => setPhoto(e.target.files?.[0] || null)} /></label>
-            <button type="button" className="secondary" onClick={takePhoto} disabled={!cameraOn} title={cameraOn ? "" : "Bật camera ở mục Giám sát cổng trước"}>Chụp từ camera khuôn mặt</button></div>
-        </div>
-        {message && <p className={`form-message ${message.ok ? "success" : "error"}`} role="status">{message.text}</p>}
-        <button type="submit" disabled={busy}>{busy ? "Đang lưu…" : "Lưu ủy quyền"}</button>
-      </form>
-      <div className="access-card">
-        <div><p className="eyebrow">DANH SÁCH</p><h2>Ủy quyền gần đây</h2></div>
-        {items.length === 0 ? <p className="empty-note">Chưa có ủy quyền nào.</p> : <ul className="authorization-list">{items.map(item => <li key={item.id} className={item.status}>
-          <div><b>{item.plate_number}</b><span className={`badge ${item.status}`}>{statusLabel[item.status]}</span></div>
-          <p>{item.borrower_name} ({item.borrower_code}) lấy hộ {item.owner_name}</p>
-          <small>Tạo bởi {item.created_by} · {new Date(item.created_at).toLocaleString("vi-VN")} · hết hạn {new Date(item.valid_until).toLocaleString("vi-VN")}{item.note ? ` · ${item.note}` : ""}</small>
-          {item.status === "active" && <button type="button" className="secondary" onClick={() => revoke(item)}>Hủy ủy quyền</button>}
-        </li>)}</ul>}
-      </div>
-    </div>
-  </section>;
 }
 
 export function AccountsPanel({ user }: { user: StaffUser }) {

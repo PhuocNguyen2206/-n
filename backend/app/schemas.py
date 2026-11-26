@@ -39,7 +39,6 @@ class RecognitionResult(BaseModel):
     face_detection_confidence: float | None = None
     face_similarity: float | None = None
     plate_source: Literal["ocr", "vlm"] | None = None
-    authorization_id: str | None = None
 
 
 class ManualGateEventRequest(BaseModel):

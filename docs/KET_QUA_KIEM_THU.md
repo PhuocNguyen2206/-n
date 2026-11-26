@@ -3,19 +3,19 @@
 Máy chạy: Windows 11, Intel Core i5-12400F, GPU NVIDIA (Ollama), Python 3.12, Node.js 22.
 Toàn bộ số liệu dưới đây chạy lại được bằng lệnh ghi kèm, trên mã nguồn nhánh `hoan-thien-do-an`.
 
-## 1. Kiểm thử tự động: 56/56 bài đạt
+## 1. Kiểm thử tự động: 51/51 bài đạt
 
 ```
 cd backend
 .venv\Scripts\python.exe -m pytest -q tests      # Mac: .venv/bin/python -m pytest -q tests
-56 passed in ~15 s
+51 passed in ~11 s
 ```
 
 Không cần GPU, Ollama hay camera. Mỗi bài dùng SQLite và thư mục ảnh tạm, không đụng dữ liệu vận hành.
 
 | Tệp | Số bài | Nội dung |
 |---|---|---|
-| `tests/test_api.py` | 23 | Luồng nghiệp vụ qua API thật (FastAPI TestClient) với AI giả lập |
+| `tests/test_api.py` | 18 | Luồng nghiệp vụ qua API thật (FastAPI TestClient) với AI giả lập |
 | `tests/test_vlm.py` | 23 | Client Ollama: định dạng biển số, Ollama tắt/thiếu model/lỗi 500, VLM bận, phát hiện chuỗi "8888…" rồi nạp lại model |
 | `tests/test_vision_fallback.py` | 10 | Luật kết hợp OCR + VLM: OCR hợp lệ không gọi VLM, OCR rỗng/sai định dạng/kém tin cậy thì gọi VLM |
 
@@ -26,7 +26,6 @@ Các bài trong `test_api.py`:
 | Đăng nhập | API nghiệp vụ và ảnh bằng chứng trả 401 khi chưa đăng nhập; mật khẩu mặc định phải đổi trước khi dùng (403); mật khẩu mới < 8 ký tự bị từ chối; đăng xuất mất quyền; bảo vệ không tạo được tài khoản; tài khoản bị khóa mất phiên ngay |
 | Xe vào / ra | Chủ xe vào rồi ra: cho phép, đóng phiên, lưu ảnh vào/ra đúng phiên, ảnh ghép mặt trái – biển phải; ra lần hai bị từ chối; khung hình vào lặp không ghi thêm nhật ký; người ngồi sau lấy xe ra được; 4 lượt vào đồng thời chỉ tạo 1 phiên |
 | Bảo vệ duyệt | Người lạ lấy xe → chờ bảo vệ, có độ giống khuôn mặt; quét lại dùng lại đúng yêu cầu; không thấy mặt → chờ bảo vệ; duyệt ghi tên theo tài khoản đăng nhập (bỏ qua tên gửi kèm); duyệt lần hai 409; từ chối giữ phiên mở; yêu cầu cũ không đóng được phiên mới |
-| Ủy quyền lấy xe hộ | Người được ủy quyền ra → cho phép, ghi rõ tên người lấy hộ và chủ xe; ủy quyền chỉ dùng một lần; người lạ khác vẫn bị chặn; xe không ở trong bãi, ảnh không có mặt, thời hạn > 24 giờ, thiếu MSSV → từ chối; ủy quyền đã hủy hoặc hết hạn không còn tác dụng; chủ xe tự lấy xe thì ủy quyền chưa dùng hết hiệu lực |
 | Dữ liệu lỗi | Tệp không phải ảnh 415; ảnh hỏng 422; thiếu một ảnh ở chế độ hai camera 422; hướng sai 422; ảnh vượt dung lượng 413; không lưu ảnh hay nhật ký khi lỗi; chặn truy cập `../` vào thư mục ảnh |
 | Thống kê, nhật ký | Tổng = cho phép + từ chối + chờ xử lý; lọc theo thời điểm; 45 sự kiện qua 3 trang không trùng/thiếu; tìm biển số bỏ dấu phân cách; lọc thời gian múi giờ +07; dữ liệu và yêu cầu chờ còn nguyên sau khởi động lại |
 
@@ -41,8 +40,6 @@ Chạy API riêng (cổng 8011, thư mục dữ liệu tạm) và giao diện qu
 | Chủ xe vào, ra bằng ảnh khác của chính người đó | Cho phép | 0,90 | 0,23 s |
 | Người khác lấy xe | Chờ bảo vệ | 0,04 | 0,23 s |
 | Bảo vệ duyệt trên giao diện (lý do + tích xác nhận) | `manual_approved`, thanh chắn mô phỏng mở | | |
-| Ủy quyền: người lạ khác lấy xe | Chờ bảo vệ | -0,12 | 0,23 s |
-| Ủy quyền: ảnh khác của người được ủy quyền | Cho phép (người được ủy quyền) | 0,64 | 0,21 s |
 | Xe chưa vào mà ra | Từ chối | | 0,19 s |
 | Ảnh camera mặt không có người | Từ chối (không thấy khuôn mặt) | | 0,14 s |
 
@@ -73,4 +70,4 @@ Chi tiết tại `02_Ket_qua_so_sanh_model/02_Khuon_mat_FaceNet_ArcFace/GIAI_THI
 
 ## Lịch sử
 
-Bản 12/11/2026 ghi "22/22 bài kiểm thử API đạt" nhưng bộ test đó không được đưa vào mã nguồn nên không chạy lại được. Bộ `tests/test_api.py` hiện tại viết lại và mở rộng các kịch bản đó (thêm đăng nhập, ủy quyền, giới hạn dung lượng, đồng thời).
+Bản 12/11/2026 ghi "22/22 bài kiểm thử API đạt" nhưng bộ test đó không được đưa vào mã nguồn nên không chạy lại được. Bộ `tests/test_api.py` hiện tại viết lại và mở rộng các kịch bản đó (thêm đăng nhập, giới hạn dung lượng, đồng thời).

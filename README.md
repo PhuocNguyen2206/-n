@@ -8,7 +8,6 @@ Sản phẩm đồ án kiểm soát phương tiện tại cổng trường bằn
 - Màn hình làn xe thời gian thực: mở hai luồng camera, quét tự động mỗi 3 giây và hiển thị quyết định cho phép/từ chối tại chỗ.
 - Đọc biển số kết hợp: YOLOv8 (`license_plate.pt`) tìm biển, `chars_best.pt` đọc ký tự; khi kết quả rỗng, sai định dạng biển Việt Nam, hoặc đúng định dạng nhưng có ký tự độ tin cậy < 0,5 thì VLM **Qwen2.5-VL 3B** (chạy local qua Ollama) đọc lại. FaceNet tạo đặc trưng khuôn mặt trên CPU.
 - **Đăng nhập** cho bảo vệ/quản trị viên; ảnh bằng chứng (có khuôn mặt) chỉ xem được khi đã đăng nhập; nhật ký ghi tài khoản người xử lý.
-- **Ủy quyền lấy xe hộ (xe mượn)**: chủ xe đã gửi xe nhờ người khác lấy ra; bảo vệ ghi tên, MSSV/CCCD và chụp mặt người lấy hộ. Ủy quyền gắn với đúng lượt gửi xe, có thời hạn và chỉ dùng một lần.
 - Không cần đăng ký trước: lúc xe vào, hệ thống lưu biển số và các khuôn mặt xuất hiện trong lượt xe.
 - Cơ chế fail-closed: lúc xe ra chỉ `approved` khi biển số có lượt vào đang mở và khuôn mặt khớp với một người được ghi nhận trong lượt vào đó. Mọi trường hợp khác bị từ chối và ghi nhật ký.
 - Phiên gửi xe: nếu có nhiều người cùng đi vào xe, chỉ cần một trong các khuôn mặt đó xuất hiện lúc ra là hợp lệ.
@@ -40,7 +39,7 @@ không báo lỗi. Kết quả đo so sánh trên tập test: OCR 71,0 % → k�
 Biến môi trường tùy chọn: `VLM_ENABLED=0` (tắt hẳn VLM), `OLLAMA_HOST` (mặc định
 `http://127.0.0.1:11434`), `VLM_MODEL` (mặc định `qwen2.5vl:3b`), `VLM_TIMEOUT` (giây, mặc định 30).
 
-Chạy kiểm thử backend (56 bài, khoảng 15 giây, không cần GPU/Ollama/camera): `cd backend` rồi
+Chạy kiểm thử backend (51 bài, khoảng 15 giây, không cần GPU/Ollama/camera): `cd backend` rồi
 `.venv/bin/python -m pytest -q tests` (Windows: `.venv\Scripts\python.exe -m pytest -q tests`).
 Kết quả và phạm vi từng nhóm bài xem tại [docs/KET_QUA_KIEM_THU.md](docs/KET_QUA_KIEM_THU.md).
 
@@ -65,7 +64,6 @@ dù mở bằng `localhost` hay `127.0.0.1`. Không cần đặt `VITE_API_URL` 
 | `FACE_MATCH_THRESHOLD` | `0.45` | Ngưỡng độ giống khuôn mặt (cosine FaceNet). Trên LFW: FAR 0,37 %, FRR 1,73 % |
 | `OCR_MIN_CHAR_CONFIDENCE` | `0.5` | Ký tự OCR thấp hơn mức này thì hỏi thêm VLM |
 | `MAX_UPLOAD_MB` | `10` | Dung lượng tối đa mỗi ảnh tải lên |
-| `MAX_AUTHORIZATION_HOURS` | `24` | Thời hạn tối đa của một ủy quyền lấy xe hộ |
 | `SESSION_HOURS` | `12` | Thời gian giữ đăng nhập |
 | `DATA_DIR` | `backend/data` | Thư mục SQLite và ảnh bằng chứng |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `admin`, `admin123` | Tài khoản tạo lần đầu |
@@ -119,9 +117,6 @@ Khi phát triển cục bộ, chạy API từ `backend` và frontend từ `front
 3. Người A và xe X vào: tạo phiên và lưu ảnh; sau đó thử người B với xe X ra để kiểm tra từ chối.
 4. Dừng camera, chọn hướng lối ra rồi bật lại. Người A với xe X ra: đối chiếu, cho phép và đóng phiên nếu nhận diện đạt điều kiện.
 5. Xem ảnh bằng chứng tại **Nhật ký** và **Đối chiếu & lưu lượng**.
-6. Xe mượn: người A vào với xe X. Ở mục **Ủy quyền lấy xe**, nhập biển X, tên A, tên và MSSV người C,
-   chụp mặt C (nút **Chụp từ camera khuôn mặt** khi camera đang bật, hoặc chọn ảnh). Người C ra với xe X:
-   AI cho phép với lý do "Người được ủy quyền lấy xe". Người D (không được ủy quyền) ra với xe X: chờ bảo vệ.
 
 Model chuyên biệt cần được chép sang máy mới trước khi đánh giá khả năng đọc biển số. Kịch bản trên là kế hoạch thử thực tế, không phải kết quả đã đo.
 
@@ -152,7 +147,7 @@ YOLOv8 và FaceNet được tự tải lần đầu khi sử dụng; model VLM t
 
 ## Chuẩn bị báo cáo tốt nghiệp
 
-Giao diện bảo vệ có sáu mục: Tổng quan, Giám sát cổng, Đối chiếu & lưu lượng, Nhật ký, Ủy quyền lấy xe và Tài khoản. Quản trị viên tạo/khóa tài khoản bảo vệ; bảo vệ chỉ đổi được mật khẩu của mình. Công cụ dữ liệu/mô hình vẫn nằm trong backend.
+Giao diện bảo vệ có năm mục: Tổng quan, Giám sát cổng, Đối chiếu & lưu lượng, Nhật ký và Tài khoản. Quản trị viên tạo/khóa tài khoản bảo vệ; bảo vệ chỉ đổi được mật khẩu của mình. Công cụ dữ liệu/mô hình vẫn nằm trong backend.
 
 - [Kế hoạch báo cáo, demo và thực nghiệm](docs/KE_HOACH_BAO_VE_DO_AN.md)
 - [Kết quả kiểm thử tự động và giới hạn](docs/KET_QUA_KIEM_THU.md)
