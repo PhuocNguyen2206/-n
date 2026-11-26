@@ -9,7 +9,7 @@
 .cards{grid-template-columns:repeat(4,1fr)}
 .card-icon.amber{color:#a27a35}
 .history-status.manual_approved,.manual_approved{color:#2f6a8f}
-.review-operator{font-size:12px;margin:8px 0}
+.review-buttons{margin-top:10px}.exit-review .review-buttons button{flex:1;font-size:13px;padding:11px}
 main>.accounts-panel{display:none}
 .view-accounts>.accounts-panel{display:block}
 .access-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}

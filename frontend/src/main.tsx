@@ -57,8 +57,6 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
   const [pendingReview, setPendingReview] = useState<ExitReview | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewMessage, setReviewMessage] = useState("");
-  const [reviewReason, setReviewReason] = useState("");
-  const [checkedEvidence, setCheckedEvidence] = useState(false);
   const [barrierState, setBarrierState] = useState<"held" | "auto_open" | "manual_open">("held");
   const scanTimerRef = useRef<number | null>(null);
   const faceTimerRef = useRef<number | null>(null);
@@ -182,7 +180,7 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Không thể quét camera");
       if (result.review_id) {
-        reviewRef.current = result; setPendingReview(result); setCheckedEvidence(false); setReviewMessage("");
+        reviewRef.current = result; setPendingReview(result); setReviewMessage("");
         if (scanTimerRef.current) window.clearInterval(scanTimerRef.current);
         scanTimerRef.current = null; setLiveScanning(false);
       }
@@ -204,11 +202,11 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
     if (!pendingReview || reviewBusy) return;
     setReviewBusy(true); setReviewMessage("");
     try {
-      const response = await apiFetch(`${API}/gate/exit-reviews/${pendingReview.review_id}/resolve`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action, reason: reviewReason.trim()})});
+      const response = await apiFetch(`${API}/gate/exit-reviews/${pendingReview.review_id}/resolve`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action})});
       const result = await response.json();
       if (!response.ok) {
         if (response.status === 409 || response.status === 404) { reviewRef.current = null; setPendingReview(null); await load(); setLiveResult("Yêu cầu không còn hiệu lực. Kiểm tra nhật ký và quét lại."); }
-        throw new Error(typeof result.detail === "string" ? result.detail : "Hãy nhập lý do xác nhận (ít nhất 3 ký tự).");
+        throw new Error(typeof result.detail === "string" ? result.detail : "Không lưu được xác nhận. Thanh chắn mô phỏng vẫn giữ.");
       }
       if (action === "approve") {
         setBarrierState("manual_open");
@@ -217,7 +215,7 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
         setCaptureDetails(previous => ({...previous, exit: `${result.plate_number} · Bảo vệ xác nhận · ${new Date(result.captured_at).toLocaleString("vi-VN")}`}));
       } else setBarrierState("held");
       setLiveResult(action === "approve" ? `✓ BẢO VỆ XÁC NHẬN · ${result.plate_number} · Mở thanh chắn mô phỏng` : `✕ BẢO VỆ TỪ CHỐI · ${result.plate_number} · Giữ thanh chắn mô phỏng`);
-      reviewRef.current = null; setPendingReview(null); setReviewReason(""); setCheckedEvidence(false);
+      reviewRef.current = null; setPendingReview(null);
       await load();
     } catch (error) { setReviewMessage(error instanceof Error ? error.message : "Không lưu được xác nhận. Thanh chắn mô phỏng vẫn giữ."); }
     finally { setReviewBusy(false); }
@@ -342,7 +340,7 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
       <p className="face-feedback">{faceResult}</p></div>
       <aside className={`scan-receipt ${pendingReview ? "has-review" : ""}`} aria-label="Ảnh quét đã lưu">
         <div className={`barrier-simulation ${barrierState === "held" ? "held" : "opened"}`}><div><small>THANH CHẮN · MÔ PHỎNG</small><strong>{barrierState === "held" ? "ĐANG GIỮ" : barrierState === "manual_open" ? "MỞ — BẢO VỆ XÁC NHẬN" : "MỞ — AI CHO PHÉP"}</strong></div><span className="simulated-arm" aria-hidden="true" />{barrierState !== "held" && <button type="button" className="secondary" onClick={() => setBarrierState("held")}>Đóng mô phỏng</button>}<p>Chỉ hiển thị trên web · Không kết nối thiết bị IoT</p></div>
-        {pendingReview && <section className="exit-review" aria-label="Bảo vệ xác nhận xe ra"><h3>Cần bảo vệ kiểm tra · {pendingReview.plate_number}</h3><p>{pendingReview.reason}</p><div className="review-evidence">{([{label: "Lúc vào", url: pendingReview.entry_evidence_url}, {label: "Lúc quét ra", url: pendingReview.evidence_url}]).map(item => <div key={item.label}><b>{item.label}</b>{item.url ? <a href={`${BACKEND}${item.url}`} target="_blank" rel="noreferrer"><img src={`${BACKEND}${item.url}`} alt={`Ảnh mặt và biển số ${item.label}`} /></a> : <p>Không có ảnh</p>}</div>)}</div><small>Vào: {new Date(pendingReview.entered_at).toLocaleString("vi-VN")} · Quét ra: {new Date(pendingReview.captured_at).toLocaleString("vi-VN")}{typeof pendingReview.face_similarity === "number" ? ` · Độ giống khuôn mặt ${pendingReview.face_similarity.toFixed(2)} (cần ≥ 0,45)` : ""}</small><p className="review-operator">Người xử lý: <b>{user.full_name}</b> ({user.username})</p><label>Lý do xác nhận<input value={reviewReason} onChange={e => setReviewReason(e.target.value)} maxLength={300} disabled={reviewBusy} placeholder="Ví dụ: đeo khẩu trang, đã kiểm tra trực tiếp" /></label><label className="review-check"><input type="checkbox" checked={checkedEvidence} onChange={e => setCheckedEvidence(e.target.checked)} disabled={reviewBusy} />Tôi đã kiểm tra người, xe và ảnh đối chiếu.</label><div className="review-buttons"><button type="button" disabled={reviewBusy || !checkedEvidence || reviewReason.trim().length < 3} onClick={() => resolveReview("approve")}>{reviewBusy ? "Đang lưu…" : "Xác nhận cho xe ra (mô phỏng)"}</button><button type="button" className="secondary" disabled={reviewBusy || reviewReason.trim().length < 3} onClick={() => resolveReview("reject")}>Không cho xe ra</button></div>{reviewMessage && <p role="alert">{reviewMessage}</p>}<small>Quét cổng đã tạm dừng. Xử lý xong rồi bấm tiếp tục quét.</small></section>}
+        {pendingReview && <section className="exit-review" aria-label="Bảo vệ xác nhận xe ra"><h3>Cần bảo vệ kiểm tra · {pendingReview.plate_number}</h3><p>{pendingReview.reason}</p><div className="review-evidence">{([{label: "Lúc vào", url: pendingReview.entry_evidence_url}, {label: "Lúc quét ra", url: pendingReview.evidence_url}]).map(item => <div key={item.label}><b>{item.label}</b>{item.url ? <a href={`${BACKEND}${item.url}`} target="_blank" rel="noreferrer"><img src={`${BACKEND}${item.url}`} alt={`Ảnh mặt và biển số ${item.label}`} /></a> : <p>Không có ảnh</p>}</div>)}</div><small>Vào: {new Date(pendingReview.entered_at).toLocaleString("vi-VN")} · Quét ra: {new Date(pendingReview.captured_at).toLocaleString("vi-VN")}{typeof pendingReview.face_similarity === "number" ? ` · Độ giống khuôn mặt ${pendingReview.face_similarity.toFixed(2)} (cần ≥ 0,45)` : ""}</small><div className="review-buttons"><button type="button" disabled={reviewBusy} onClick={() => resolveReview("approve")}>{reviewBusy ? "Đang lưu…" : "Cho xe ra"}</button><button type="button" className="secondary" disabled={reviewBusy} onClick={() => resolveReview("reject")}>Không cho xe ra</button></div>{reviewMessage && <p role="alert">{reviewMessage}</p>}<small>Quét cổng đã tạm dừng. Xử lý xong rồi bấm tiếp tục quét.</small></section>}
         <div className="receipt-heading"><div><p className="eyebrow">ẢNH QUÉT ĐÃ LƯU</p><h3>Ảnh quét {direction === "entry" ? "lối vào" : "lối ra"}</h3></div></div>
         <div className="lane-receipts single-lane">{[direction].map(lane => {
           const photo = lane === "entry" ? entrySnapshot : exitSnapshot;

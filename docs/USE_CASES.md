@@ -52,7 +52,7 @@ Người thực hiện đồ án thao tác trong `backend/training/`, `backend/d
 
 ## UC-06 — Bảo vệ xác nhận xe ra
 
-Điều kiện: biển số có phiên vào đang mở và có yêu cầu xác minh khuôn mặt chưa xử lý. Màn hình giữ ảnh của yêu cầu và tạm dừng quét cổng. Bảo vệ so sánh ảnh vào/ra, kiểm tra người/xe trực tiếp, nhập tên, lý do và xác nhận. Nếu cho ra, ghi `manual_approved`, gắn ảnh của yêu cầu vào lượt ra và đóng phiên; thanh chắn mô phỏng đổi sang mở. Nếu từ chối, ghi `denied`, phiên vẫn mở. Yêu cầu đã xử lý hoặc phiên đã đóng không được duyệt lại. Tên người xử lý là dữ liệu nhập, chưa có xác thực đăng nhập. Không có phần cứng barrier.
+Điều kiện: biển số có phiên vào đang mở và có yêu cầu xác minh khuôn mặt chưa xử lý. Màn hình giữ ảnh của yêu cầu và tạm dừng quét cổng. Bảo vệ so sánh ảnh vào/ra, kiểm tra người/xe trực tiếp rồi bấm một nút: **Cho xe ra** hoặc **Không cho xe ra** (không phải nhập lý do). Nếu cho ra, ghi `manual_approved`, gắn ảnh của yêu cầu vào lượt ra và đóng phiên; thanh chắn mô phỏng đổi sang mở. Nếu từ chối, ghi `denied`, phiên vẫn mở. Yêu cầu đã xử lý hoặc phiên đã đóng không được duyệt lại. Tên người xử lý lấy từ tài khoản đang đăng nhập. Không có phần cứng barrier.
 
 ## UC-07 — Đăng nhập và quản lý tài khoản
 

@@ -221,8 +221,8 @@ def test_guard_approve_records_logged_in_operator(client):
     scan(client, "an", "59F113860", "entry")
     review = scan(client, "noface", "59F113860", "exit")
     assert review["decision"] == "manual_review" and "khuôn mặt" in review["reason"]
-    short = client.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve", json={"action": "approve", "reason": "x"})
-    assert short.status_code == 422
+    too_long = client.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve", json={"action": "approve", "reason": "x" * 301})
+    assert too_long.status_code == 422
     approved = client.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve",
                            json={"action": "approve", "operator_name": "Tên giả", "reason": "Đã kiểm tra thẻ sinh viên"})
     assert approved.status_code == 200 and approved.json()["decision"] == "manual_approved"
@@ -232,6 +232,16 @@ def test_guard_approve_records_logged_in_operator(client):
     again = client.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve", json={"action": "approve", "reason": "Bấm lại lần hai"})
     assert again.status_code == 409
     assert client.post("/api/v1/gate/exit-reviews/khong-ton-tai/resolve", json={"action": "reject", "reason": "Không có"}).status_code == 404
+
+
+def test_guard_resolves_with_one_click_without_reason(client):
+    scan(client, "an", "59F113860", "entry")
+    review = scan(client, "dung", "59F113860", "exit")
+    approved = client.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve", json={"action": "approve"})
+    assert approved.status_code == 200 and approved.json()["decision"] == "manual_approved"
+    reason = approved.json()["reason"]
+    assert "Quản trị viên (admin)" in reason and "Lý do" not in reason and "AI:" in reason
+    assert client.get("/api/v1/sessions/recent").json()[0]["status"] == "closed"
 
 
 def test_guard_reject_keeps_session_open_and_old_review_cannot_close_new_session(client):

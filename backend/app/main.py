@@ -250,7 +250,8 @@ def resolve_exit_review(review_id: str, request: ExitReviewResolution, user: Sta
         event_id, now = str(uuid4()), now_iso()
         approved = request.action == "approve"
         decision = "manual_approved" if approved else "denied"
-        reason = f"[BẢO VỆ XÁC NHẬN] {'Cho xe ra' if approved else 'Không cho xe ra'} · Người xử lý: {user.full_name} ({user.username}) · Lý do: {request.reason} · AI: {review['reason']}"
+        note = f" · Lý do: {request.reason}" if request.reason else ""
+        reason = f"[BẢO VỆ XÁC NHẬN] {'Cho xe ra' if approved else 'Không cho xe ra'} · Người xử lý: {user.full_name} ({user.username}){note} · AI: {review['reason']}"
         connection.execute(
             "INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, face_confidence, evidence_path, operator_username) VALUES (?, ?, 'exit', ?, ?, ?, ?, ?, ?)",
             (event_id, now, review["plate_number"], decision, reason, review["face_confidence"], review["evidence_path"], user.username),

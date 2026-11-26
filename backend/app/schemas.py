@@ -55,7 +55,8 @@ class ExitReviewResolution(BaseModel):
     action: Literal["approve", "reject"]
     # Bỏ qua: người xử lý lấy từ tài khoản đăng nhập. Giữ trường để client cũ không lỗi.
     operator_name: str | None = Field(default=None, max_length=120)
-    reason: str = Field(min_length=3, max_length=300)
+    # Không bắt buộc: bảo vệ chỉ cần bấm cho ra hoặc không cho ra; giờ, tài khoản và ảnh vẫn được ghi.
+    reason: str = Field(default="", max_length=300)
 
     @field_validator("reason", mode="before")
     @classmethod

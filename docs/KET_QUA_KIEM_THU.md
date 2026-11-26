@@ -3,19 +3,19 @@
 Máy chạy: Windows 11, Intel Core i5-12400F, GPU NVIDIA (Ollama), Python 3.12, Node.js 22.
 Toàn bộ số liệu dưới đây chạy lại được bằng lệnh ghi kèm, trên mã nguồn nhánh `hoan-thien-do-an`.
 
-## 1. Kiểm thử tự động: 51/51 bài đạt
+## 1. Kiểm thử tự động: 52/52 bài đạt
 
 ```
 cd backend
 .venv\Scripts\python.exe -m pytest -q tests      # Mac: .venv/bin/python -m pytest -q tests
-51 passed in ~11 s
+52 passed in ~11 s
 ```
 
 Không cần GPU, Ollama hay camera. Mỗi bài dùng SQLite và thư mục ảnh tạm, không đụng dữ liệu vận hành.
 
 | Tệp | Số bài | Nội dung |
 |---|---|---|
-| `tests/test_api.py` | 18 | Luồng nghiệp vụ qua API thật (FastAPI TestClient) với AI giả lập |
+| `tests/test_api.py` | 19 | Luồng nghiệp vụ qua API thật (FastAPI TestClient) với AI giả lập |
 | `tests/test_vlm.py` | 23 | Client Ollama: định dạng biển số, Ollama tắt/thiếu model/lỗi 500, VLM bận, phát hiện chuỗi "8888…" rồi nạp lại model |
 | `tests/test_vision_fallback.py` | 10 | Luật kết hợp OCR + VLM: OCR hợp lệ không gọi VLM, OCR rỗng/sai định dạng/kém tin cậy thì gọi VLM |
 
@@ -39,7 +39,7 @@ Chạy API riêng (cổng 8011, thư mục dữ liệu tạm) và giao diện qu
 |---|---|---|---|
 | Chủ xe vào, ra bằng ảnh khác của chính người đó | Cho phép | 0,90 | 0,23 s |
 | Người khác lấy xe | Chờ bảo vệ | 0,04 | 0,23 s |
-| Bảo vệ duyệt trên giao diện (lý do + tích xác nhận) | `manual_approved`, thanh chắn mô phỏng mở | | |
+| Bảo vệ duyệt trên giao diện (một nút bấm) | `manual_approved`, thanh chắn mô phỏng mở | | |
 | Xe chưa vào mà ra | Từ chối | | 0,19 s |
 | Ảnh camera mặt không có người | Từ chối (không thấy khuôn mặt) | | 0,14 s |
 

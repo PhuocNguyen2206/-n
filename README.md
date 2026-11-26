@@ -39,7 +39,7 @@ không báo lỗi. Kết quả đo so sánh trên tập test: OCR 71,0 % → k�
 Biến môi trường tùy chọn: `VLM_ENABLED=0` (tắt hẳn VLM), `OLLAMA_HOST` (mặc định
 `http://127.0.0.1:11434`), `VLM_MODEL` (mặc định `qwen2.5vl:3b`), `VLM_TIMEOUT` (giây, mặc định 30).
 
-Chạy kiểm thử backend (51 bài, khoảng 15 giây, không cần GPU/Ollama/camera): `cd backend` rồi
+Chạy kiểm thử backend (52 bài, khoảng 15 giây, không cần GPU/Ollama/camera): `cd backend` rồi
 `.venv/bin/python -m pytest -q tests` (Windows: `.venv\Scripts\python.exe -m pytest -q tests`).
 Kết quả và phạm vi từng nhóm bài xem tại [docs/KET_QUA_KIEM_THU.md](docs/KET_QUA_KIEM_THU.md).
 
@@ -160,7 +160,7 @@ Phiếu thực tế tại cổng trường chưa có số liệu đo. Độ chí
 
 Không cần IoT để trình diễn quy trình trên web. Khi lối ra đọc được biển số có phiên đang mở nhưng không xác minh được mặt (không thấy mặt hoặc mặt không khớp), hệ thống tạo yêu cầu chờ bảo vệ, lưu ảnh hai camera và tạm dừng quét cổng.
 
-Ngay cạnh camera, bảo vệ xem ảnh lúc vào/ra, nhập tên và lý do, đánh dấu đã kiểm tra trực tiếp, rồi chọn **Xác nhận cho xe ra (mô phỏng)** hoặc **Không cho xe ra**. Đồng ý sẽ đóng đúng phiên và ghi quyết định `manual_approved`, khác với `approved` của AI; từ chối giữ phiên mở. Quét chỉ tiếp tục khi bảo vệ chủ động bấm nút tiếp tục. Yêu cầu chờ được đọc lại sau khi tải lại trang.
+Ngay cạnh camera, bảo vệ xem ảnh lúc vào/ra rồi bấm **Cho xe ra** hoặc **Không cho xe ra** (không phải nhập lý do). Đồng ý sẽ đóng đúng phiên và ghi quyết định `manual_approved`, khác với `approved` của AI; từ chối giữ phiên mở. Quét chỉ tiếp tục khi bảo vệ chủ động bấm nút tiếp tục. Yêu cầu chờ được đọc lại sau khi tải lại trang.
 
 Thanh chắn trên web chỉ mô phỏng trạng thái; nút Đóng mô phỏng chỉ đổi hiển thị, không hoàn tác phiên đã đóng. Không có lệnh điều khiển thiết bị thật. Đeo khẩu trang không nhất thiết làm nhận diện thất bại: hệ thống hiện chưa có bộ phát hiện khẩu trang riêng. Nếu không đọc được biển số hoặc không có phiên vào, không cung cấp nút duyệt ra cho một phiên chưa xác định.
 
