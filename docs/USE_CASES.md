@@ -1,13 +1,15 @@
 # Use case — Kiểm soát phương tiện tại cổng trường
 
-Phạm vi giao diện vận hành: Tổng quan, Giám sát cổng, Đối chiếu & lưu lượng, Nhật ký. Không có trang xử lý ngoại lệ hoặc huấn luyện mô hình riêng dành cho bảo vệ. Xác nhận xe ra thủ công được tích hợp tại màn hình giám sát. Backend vẫn giữ API kỹ thuật về dữ liệu, mô hình và lượt thủ công để tương thích; việc bỏ menu không đồng nghĩa có cơ chế phân quyền hay khóa API.
+Phạm vi giao diện vận hành: Tổng quan, Giám sát cổng, Đối chiếu & lưu lượng, Nhật ký, Ủy quyền lấy xe và Tài khoản. Mọi API nghiệp vụ và ảnh bằng chứng yêu cầu đăng nhập; chỉ `/api/v1/health` và `/api/v1/model/status` công khai. Quản trị viên quản lý tài khoản bảo vệ; bảo vệ chỉ đổi được mật khẩu của mình.
 
 ## Tác nhân
 
 | Tác nhân | Vai trò |
 | --- | --- |
 | Người điều khiển xe | Đưa xe và khuôn mặt vào vùng quan sát |
-| Bảo vệ | Chọn camera, giám sát kết quả và tra cứu ảnh |
+| Bảo vệ | Đăng nhập, chọn camera, giám sát kết quả, duyệt xe ra, ghi ủy quyền lấy xe hộ, tra cứu ảnh |
+| Quản trị viên | Như bảo vệ, thêm quyền tạo/khóa tài khoản |
+| Chủ xe, người lấy xe hộ | Chủ xe đã gửi xe nhờ người khác lấy ra; người lấy hộ cho chụp mặt và đọc MSSV/CCCD |
 | Webcam | Hai webcam: một thu mặt, một thu biển số; chọn hướng vào/ra để thử lần lượt |
 | Hệ thống | Đọc biển số, trích đặc trưng khuôn mặt, đối chiếu và lưu lượt |
 
@@ -52,3 +54,22 @@ Người thực hiện đồ án thao tác trong `backend/training/`, `backend/d
 ## UC-06 — Bảo vệ xác nhận xe ra
 
 Điều kiện: biển số có phiên vào đang mở và có yêu cầu xác minh khuôn mặt chưa xử lý. Màn hình giữ ảnh của yêu cầu và tạm dừng quét cổng. Bảo vệ so sánh ảnh vào/ra, kiểm tra người/xe trực tiếp, nhập tên, lý do và xác nhận. Nếu cho ra, ghi `manual_approved`, gắn ảnh của yêu cầu vào lượt ra và đóng phiên; thanh chắn mô phỏng đổi sang mở. Nếu từ chối, ghi `denied`, phiên vẫn mở. Yêu cầu đã xử lý hoặc phiên đã đóng không được duyệt lại. Tên người xử lý là dữ liệu nhập, chưa có xác thực đăng nhập. Không có phần cứng barrier.
+
+## UC-07 — Ủy quyền lấy xe hộ (xe mượn)
+
+Điều kiện: bảo vệ đã đăng nhập; xe đang có lượt vào mở (đang ở trong bãi).
+
+1. Chủ xe báo bảo vệ (gặp trực tiếp hoặc gọi điện) rằng người C sẽ lấy xe X ra.
+2. Bảo vệ mở **Ủy quyền lấy xe**, nhập biển số X, tên chủ xe, tên và MSSV/CCCD của C, thời hạn (tối đa 24 giờ), ghi chú.
+3. Bảo vệ chụp mặt C từ camera khuôn mặt hoặc chọn ảnh. Hệ thống trích đặc trưng FaceNet và lưu ủy quyền gắn với đúng lượt gửi xe.
+4. Lúc ra, nếu mặt người lái không khớp người lúc vào, hệ thống so tiếp với các ủy quyền còn hiệu lực của lượt đó. Khớp (≥ ngưỡng) thì cho phép, ghi lý do "Người được ủy quyền lấy xe", đóng phiên và đánh dấu ủy quyền đã dùng.
+
+Ngoại lệ: biển số không có lượt vào mở → không tạo được ủy quyền. Ảnh không có mặt rõ → yêu cầu chụp lại. Ủy quyền hết hạn, đã hủy, đã dùng, hoặc người ra không khớp ủy quyền → chuyển bảo vệ kiểm tra (UC-06). Chủ xe tự lấy xe ra → các ủy quyền chưa dùng của lượt đó hết hiệu lực.
+
+## UC-08 — Đăng nhập và quản lý tài khoản
+
+1. Người dùng nhập tên đăng nhập và mật khẩu. Hệ thống cấp cookie phiên HttpOnly (12 giờ).
+2. Tài khoản mới hoặc tài khoản quản trị mặc định phải đổi mật khẩu trước khi dùng chức năng khác.
+3. Quản trị viên tạo tài khoản bảo vệ (mật khẩu tạm) hoặc khóa tài khoản; tài khoản bị khóa mất phiên ngay.
+
+Ngoại lệ: sai mật khẩu → báo lỗi chung, không tiết lộ tài khoản có tồn tại hay không. Hết phiên → quay về màn hình đăng nhập.

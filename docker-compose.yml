@@ -10,6 +10,8 @@ services:
       # Ollama chạy trên máy host (không chạy trong container).
       - OLLAMA_HOST=http://host.docker.internal:11434
       - VLM_MODEL=qwen2.5vl:3b
+      # Đổi mật khẩu quản trị ban đầu tại đây hoặc sau khi đăng nhập lần đầu.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -17,5 +19,8 @@ services:
     build: ./frontend
     ports:
       - "5173:5173"
+    environment:
+      # Vite chuyển /api, /evidence sang container API (cookie đăng nhập cùng nguồn).
+      - VITE_PROXY_TARGET=http://api:8000
     depends_on:
       - api

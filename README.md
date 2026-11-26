@@ -6,7 +6,9 @@ Sản phẩm đồ án kiểm soát phương tiện tại cổng trường bằn
 
 - Quét riêng ảnh khuôn mặt và ảnh xe/biển số, phù hợp mô phỏng hai camera.
 - Màn hình làn xe thời gian thực: mở hai luồng camera, quét tự động mỗi 3 giây và hiển thị quyết định cho phép/từ chối tại chỗ.
-- Đọc biển số kết hợp: YOLOv8 (`license_plate.pt`) tìm biển, `chars_best.pt` đọc ký tự; khi kết quả rỗng hoặc sai định dạng biển Việt Nam thì VLM **Qwen2.5-VL 3B** (chạy local qua Ollama) đọc lại. FaceNet tạo đặc trưng khuôn mặt trên CPU.
+- Đọc biển số kết hợp: YOLOv8 (`license_plate.pt`) tìm biển, `chars_best.pt` đọc ký tự; khi kết quả rỗng, sai định dạng biển Việt Nam, hoặc đúng định dạng nhưng có ký tự độ tin cậy < 0,5 thì VLM **Qwen2.5-VL 3B** (chạy local qua Ollama) đọc lại. FaceNet tạo đặc trưng khuôn mặt trên CPU.
+- **Đăng nhập** cho bảo vệ/quản trị viên; ảnh bằng chứng (có khuôn mặt) chỉ xem được khi đã đăng nhập; nhật ký ghi tài khoản người xử lý.
+- **Ủy quyền lấy xe hộ (xe mượn)**: chủ xe đã gửi xe nhờ người khác lấy ra; bảo vệ ghi tên, MSSV/CCCD và chụp mặt người lấy hộ. Ủy quyền gắn với đúng lượt gửi xe, có thời hạn và chỉ dùng một lần.
 - Không cần đăng ký trước: lúc xe vào, hệ thống lưu biển số và các khuôn mặt xuất hiện trong lượt xe.
 - Cơ chế fail-closed: lúc xe ra chỉ `approved` khi biển số có lượt vào đang mở và khuôn mặt khớp với một người được ghi nhận trong lượt vào đó. Mọi trường hợp khác bị từ chối và ghi nhật ký.
 - Phiên gửi xe: nếu có nhiều người cùng đi vào xe, chỉ cần một trong các khuôn mặt đó xuất hiện lúc ra là hợp lệ.
@@ -38,8 +40,42 @@ không báo lỗi. Kết quả đo so sánh trên tập test: OCR 71,0 % → k�
 Biến môi trường tùy chọn: `VLM_ENABLED=0` (tắt hẳn VLM), `OLLAMA_HOST` (mặc định
 `http://127.0.0.1:11434`), `VLM_MODEL` (mặc định `qwen2.5vl:3b`), `VLM_TIMEOUT` (giây, mặc định 30).
 
-Chạy kiểm thử backend: `cd backend` rồi `.venv/bin/python -m pytest -q tests`
-(Windows: `.venv\Scripts\python.exe -m pytest -q tests`).
+Chạy kiểm thử backend (56 bài, khoảng 15 giây, không cần GPU/Ollama/camera): `cd backend` rồi
+`.venv/bin/python -m pytest -q tests` (Windows: `.venv\Scripts\python.exe -m pytest -q tests`).
+Kết quả và phạm vi từng nhóm bài xem tại [docs/KET_QUA_KIEM_THU.md](docs/KET_QUA_KIEM_THU.md).
+
+Ollama 0.40 đôi khi bị kẹt sau một ảnh nhất định và trả "8888…" cho mọi câu hỏi. Backend tự phát hiện,
+gỡ model khỏi bộ nhớ rồi đọc lại; trong log API sẽ có dòng `VLM trả chuỗi lặp bất thường`.
+
+### Đăng nhập lần đầu
+
+Lần đầu API chạy với cơ sở dữ liệu trống, hệ thống tạo tài khoản **admin / admin123** (đổi bằng biến
+`ADMIN_USERNAME`, `ADMIN_PASSWORD`). Đăng nhập xong bắt buộc đặt mật khẩu mới. Quản trị viên tạo
+tài khoản bảo vệ ở mục **Tài khoản**; người được tạo cũng phải đổi mật khẩu ở lần đăng nhập đầu.
+Quên mật khẩu quản trị: tắt API, chạy `scripts/reset-demo-data.py` (dữ liệu cũ được chuyển vào
+`backend/data/backup-…`, không bị xóa).
+
+Trình duyệt gọi API qua proxy của Vite (`frontend/vite.config.ts`), nên cookie đăng nhập hoạt động
+dù mở bằng `localhost` hay `127.0.0.1`. Không cần đặt `VITE_API_URL` khi chạy trên một máy.
+
+### Biến môi trường của backend
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `FACE_MATCH_THRESHOLD` | `0.45` | Ngưỡng độ giống khuôn mặt (cosine FaceNet). Trên LFW: FAR 0,37 %, FRR 1,73 % |
+| `OCR_MIN_CHAR_CONFIDENCE` | `0.5` | Ký tự OCR thấp hơn mức này thì hỏi thêm VLM |
+| `MAX_UPLOAD_MB` | `10` | Dung lượng tối đa mỗi ảnh tải lên |
+| `MAX_AUTHORIZATION_HOURS` | `24` | Thời hạn tối đa của một ủy quyền lấy xe hộ |
+| `SESSION_HOURS` | `12` | Thời gian giữ đăng nhập |
+| `DATA_DIR` | `backend/data` | Thư mục SQLite và ảnh bằng chứng |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `admin`, `admin123` | Tài khoản tạo lần đầu |
+| `COOKIE_SECURE` | `0` | Đặt `1` khi chạy sau HTTPS |
+
+### Dữ liệu sạch trước buổi demo
+
+Tắt API rồi chạy `backend\.venv\Scripts\python.exe scripts\reset-demo-data.py` (Mac:
+`backend/.venv/bin/python scripts/reset-demo-data.py`). Script chỉ **chuyển** cơ sở dữ liệu và ảnh
+cũ vào `backend/data/backup-<thời gian>/`, không xóa.
 
 ### Máy Mac Apple Silicon đã thiết lập
 
@@ -77,11 +113,15 @@ Khi phát triển cục bộ, chạy API từ `backend` và frontend từ `front
 
 ## Luồng demo
 
+0. Đăng nhập (xem mục Đăng nhập lần đầu).
 1. Mở **Giám sát cổng**, tìm và chọn hai webcam riêng: một khuôn mặt, một biển số. Chọn hướng kiểm tra lối vào.
 2. Bấm **Bật camera**. Camera khuôn mặt thu mặt người lái; camera biển số thu biển số xe. Hai ảnh được gửi cùng một yêu cầu kiểm tra.
 3. Người A và xe X vào: tạo phiên và lưu ảnh; sau đó thử người B với xe X ra để kiểm tra từ chối.
 4. Dừng camera, chọn hướng lối ra rồi bật lại. Người A với xe X ra: đối chiếu, cho phép và đóng phiên nếu nhận diện đạt điều kiện.
 5. Xem ảnh bằng chứng tại **Nhật ký** và **Đối chiếu & lưu lượng**.
+6. Xe mượn: người A vào với xe X. Ở mục **Ủy quyền lấy xe**, nhập biển X, tên A, tên và MSSV người C,
+   chụp mặt C (nút **Chụp từ camera khuôn mặt** khi camera đang bật, hoặc chọn ảnh). Người C ra với xe X:
+   AI cho phép với lý do "Người được ủy quyền lấy xe". Người D (không được ủy quyền) ra với xe X: chờ bảo vệ.
 
 Model chuyên biệt cần được chép sang máy mới trước khi đánh giá khả năng đọc biển số. Kịch bản trên là kế hoạch thử thực tế, không phải kết quả đã đo.
 
@@ -112,13 +152,14 @@ YOLOv8 và FaceNet được tự tải lần đầu khi sử dụng; model VLM t
 
 ## Chuẩn bị báo cáo tốt nghiệp
 
-Giao diện bảo vệ có bốn mục: Tổng quan, Giám sát cổng, Đối chiếu & lưu lượng và Nhật ký. Công cụ dữ liệu/mô hình vẫn nằm trong backend; không có trang quản trị có phân quyền.
+Giao diện bảo vệ có sáu mục: Tổng quan, Giám sát cổng, Đối chiếu & lưu lượng, Nhật ký, Ủy quyền lấy xe và Tài khoản. Quản trị viên tạo/khóa tài khoản bảo vệ; bảo vệ chỉ đổi được mật khẩu của mình. Công cụ dữ liệu/mô hình vẫn nằm trong backend.
 
 - [Kế hoạch báo cáo, demo và thực nghiệm](docs/KE_HOACH_BAO_VE_DO_AN.md)
 - [Kết quả kiểm thử tự động và giới hạn](docs/KET_QUA_KIEM_THU.md)
+- [Nháp nội dung cập nhật cho quyển báo cáo](docs/NHAP_CAP_NHAT_BAO_CAO.md)
 - [Phiếu ghi kết quả thực tế](docs/MAU_KIEM_THU_THUC_TE.csv)
 
-Các phiếu mẫu chưa có số liệu đo. Chưa thể kết luận độ chính xác nhận diện thực tế từ kiểm thử AI giả lập.
+Phiếu thực tế tại cổng trường chưa có số liệu đo. Độ chính xác đã đo trên tập chuẩn: biển số (tập test 69 ảnh, OCR 71,0 % → kết hợp VLM 91,3 %), khuôn mặt (LFW 6.000 cặp, 98,95 % tại ngưỡng 0,45). Kiểm thử API dùng AI giả lập nên chỉ kiểm chứng logic quyết định.
 
 ## Xác nhận xe ra và thanh chắn mô phỏng
 
@@ -128,7 +169,7 @@ Ngay cạnh camera, bảo vệ xem ảnh lúc vào/ra, nhập tên và lý do, �
 
 Thanh chắn trên web chỉ mô phỏng trạng thái; nút Đóng mô phỏng chỉ đổi hiển thị, không hoàn tác phiên đã đóng. Không có lệnh điều khiển thiết bị thật. Đeo khẩu trang không nhất thiết làm nhận diện thất bại: hệ thống hiện chưa có bộ phát hiện khẩu trang riêng. Nếu không đọc được biển số hoặc không có phiên vào, không cung cấp nút duyệt ra cho một phiên chưa xác định.
 
-Tên bảo vệ đang do người dùng nhập, chưa phải danh tính được xác thực. Bản này phục vụ demo cục bộ, chưa có phân quyền để vận hành tại cổng thật.
+Người xử lý được lấy từ tài khoản đang đăng nhập, không nhập tay. Bản này vẫn phục vụ demo cục bộ: chưa chạy HTTPS, chưa có nhật ký kiểm toán thao tác quản trị tài khoản.
 
 ## Tìm lại đúng ảnh của lượt xe
 

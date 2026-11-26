@@ -1,57 +1,76 @@
-# Kết quả kiểm thử ngày 12/11/2026
+# Kết quả kiểm thử — cập nhật 27/11/2026
 
-Môi trường: Mac ARM64, Python 3.11, Node.js 22. Dữ liệu kiểm thử nằm trong thư mục tạm; không thêm lượt xe vào cơ sở dữ liệu vận hành.
+Máy chạy: Windows 11, Intel Core i5-12400F, GPU NVIDIA (Ollama), Python 3.12, Node.js 22.
+Toàn bộ số liệu dưới đây chạy lại được bằng lệnh ghi kèm, trên mã nguồn nhánh `hoan-thien-do-an`.
 
-## Kiểm thử API và lưu ảnh: 9/9 đạt
+## 1. Kiểm thử tự động: 56/56 bài đạt
 
-Các bài này dùng AI giả lập để chủ động kiểm tra quyết định và lưu trữ; chúng không đo độ chính xác nhận diện.
-
-| Bài kiểm thử | Kết quả |
-| --- | --- |
-| Xe vào, khung hình vào lặp, xe ra: lưu riêng ảnh vào/ra và liên kết phiên đúng | Đạt |
-| Ảnh lưu phục vụ qua URL, đúng JPEG, kích thước và màu gần khớp khung PNG đầu vào | Đạt |
-| Thiếu biển số: chờ, không tạo ảnh hoặc nhật ký | Đạt |
-| Thiếu khuôn mặt: chờ, không tạo ảnh hoặc nhật ký | Đạt |
-| Xe ra chưa có lượt vào: từ chối, giữ ảnh bằng chứng | Đạt |
-| Khuôn mặt không khớp: từ chối, giữ phiên gửi xe mở | Đạt |
-| Hướng di chuyển sai: HTTP 422, không lưu ảnh | Đạt |
-| Tệp không có MIME ảnh: HTTP 415, không lưu ảnh | Đạt |
-| Tạo lại API client và chạy lại startup: ảnh và nhật ký vẫn đọc được | Đạt |
-
-Chạy lại từ thư mục `backend`:
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
+```
+cd backend
+.venv\Scripts\python.exe -m pytest -q tests      # Mac: .venv/bin/python -m pytest -q tests
+56 passed in ~15 s
 ```
 
-## Mô hình AI thật và frontend
+Không cần GPU, Ollama hay camera. Mỗi bài dùng SQLite và thư mục ảnh tạm, không đụng dữ liệu vận hành.
 
-- YOLOv8n + EasyOCR chạy trên ảnh trắng 640 × 480: không phát hiện đối tượng hoặc biển số, không lỗi.
-- Bộ phát hiện khuôn mặt trên ảnh trắng: 0 khuôn mặt, không lỗi.
-- FaceNet chạy tensor tổng hợp: đầu ra embedding kích thước `(1, 512)`.
-- `npm --prefix frontend run build`: TypeScript và Vite hoàn thành thành công.
-- `git diff --check`: đạt.
+| Tệp | Số bài | Nội dung |
+|---|---|---|
+| `tests/test_api.py` | 23 | Luồng nghiệp vụ qua API thật (FastAPI TestClient) với AI giả lập |
+| `tests/test_vlm.py` | 23 | Client Ollama: định dạng biển số, Ollama tắt/thiếu model/lỗi 500, VLM bận, phát hiện chuỗi "8888…" rồi nạp lại model |
+| `tests/test_vision_fallback.py` | 10 | Luật kết hợp OCR + VLM: OCR hợp lệ không gọi VLM, OCR rỗng/sai định dạng/kém tin cậy thì gọi VLM |
 
-## Giới hạn
+Các bài trong `test_api.py`:
 
-Chưa kiểm thử độ chính xác với người/biển số thật hoặc thao tác camera thực tế trên trình duyệt. Model biển số riêng từ Windows chưa được chuyển sang Mac. Việc tạo lại API client kiểm tra tính bền vững qua startup, không phải thử khởi động lại hệ điều hành. Hiện ảnh của lượt bị từ chối nhưng có đủ mặt và biển số cũng được lưu làm bằng chứng; khung hình đang chờ và khung hình vào lặp không tạo ảnh mới.
+| Nhóm | Kịch bản kiểm tra |
+|---|---|
+| Đăng nhập | API nghiệp vụ và ảnh bằng chứng trả 401 khi chưa đăng nhập; mật khẩu mặc định phải đổi trước khi dùng (403); mật khẩu mới < 8 ký tự bị từ chối; đăng xuất mất quyền; bảo vệ không tạo được tài khoản; tài khoản bị khóa mất phiên ngay |
+| Xe vào / ra | Chủ xe vào rồi ra: cho phép, đóng phiên, lưu ảnh vào/ra đúng phiên, ảnh ghép mặt trái – biển phải; ra lần hai bị từ chối; khung hình vào lặp không ghi thêm nhật ký; người ngồi sau lấy xe ra được; 4 lượt vào đồng thời chỉ tạo 1 phiên |
+| Bảo vệ duyệt | Người lạ lấy xe → chờ bảo vệ, có độ giống khuôn mặt; quét lại dùng lại đúng yêu cầu; không thấy mặt → chờ bảo vệ; duyệt ghi tên theo tài khoản đăng nhập (bỏ qua tên gửi kèm); duyệt lần hai 409; từ chối giữ phiên mở; yêu cầu cũ không đóng được phiên mới |
+| Ủy quyền lấy xe hộ | Người được ủy quyền ra → cho phép, ghi rõ tên người lấy hộ và chủ xe; ủy quyền chỉ dùng một lần; người lạ khác vẫn bị chặn; xe không ở trong bãi, ảnh không có mặt, thời hạn > 24 giờ, thiếu MSSV → từ chối; ủy quyền đã hủy hoặc hết hạn không còn tác dụng; chủ xe tự lấy xe thì ủy quyền chưa dùng hết hiệu lực |
+| Dữ liệu lỗi | Tệp không phải ảnh 415; ảnh hỏng 422; thiếu một ảnh ở chế độ hai camera 422; hướng sai 422; ảnh vượt dung lượng 413; không lưu ảnh hay nhật ký khi lỗi; chặn truy cập `../` vào thư mục ảnh |
+| Thống kê, nhật ký | Tổng = cho phép + từ chối + chờ xử lý; lọc theo thời điểm; 45 sự kiện qua 3 trang không trùng/thiếu; tìm biển số bỏ dấu phân cách; lọc thời gian múi giờ +07; dữ liệu và yêu cầu chờ còn nguyên sau khởi động lại |
 
-## Cập nhật chế độ hai webcam — 12/11/2026
+Giới hạn: AI giả lập (mỗi màu ảnh tương ứng một người/biển số) nên các bài này kiểm chứng **logic quyết định**, không đo độ chính xác nhận diện.
 
-Chạy lại sau thay đổi: **12/12 bài đạt**, thời gian chạy unittest 0,103 giây (không bao gồm thời gian import thư viện). Thêm ba bài: ảnh từ hai camera được đưa đúng dịch vụ AI và ghép đúng trái/phải cho cả hướng vào/ra; thiếu một ảnh trong chế độ hai camera trả 422; nội dung giả ảnh bị chặn. Bài hai camera dùng hai ảnh màu khác nhau và kiểm tra điểm ảnh của JPEG đã lưu. Đây là kiểm thử bằng AI giả lập, chưa có thiết bị camera thật.
+## 2. Chạy thật với mô hình thật (27/11/2026)
 
-Frontend build thành công. Kiểm tra trình duyệt xác nhận hai ô Camera khuôn mặt/Camera biển số và lựa chọn hướng ra đổi nhãn của cả hai ô.
+Chạy API riêng (cổng 8011, thư mục dữ liệu tạm) và giao diện qua proxy Vite, ảnh khuôn mặt LFW và ảnh biển số tập test:
 
-## Cập nhật bảo vệ xác nhận và thanh chắn mô phỏng — 12/11/2026
+| Kịch bản | Kết quả | Độ giống | Thời gian một lượt |
+|---|---|---|---|
+| Chủ xe vào, ra bằng ảnh khác của chính người đó | Cho phép | 0,90 | 0,23 s |
+| Người khác lấy xe | Chờ bảo vệ | 0,04 | 0,23 s |
+| Bảo vệ duyệt trên giao diện (lý do + tích xác nhận) | `manual_approved`, thanh chắn mô phỏng mở | | |
+| Ủy quyền: người lạ khác lấy xe | Chờ bảo vệ | -0,12 | 0,23 s |
+| Ủy quyền: ảnh khác của người được ủy quyền | Cho phép (người được ủy quyền) | 0,64 | 0,21 s |
+| Xe chưa vào mà ra | Từ chối | | 0,19 s |
+| Ảnh camera mặt không có người | Từ chối (không thấy khuôn mặt) | | 0,14 s |
 
-**19/19 bài kiểm thử API đạt**, unittest 0,191 giây (không gồm import). Bổ sung kiểm thử xe đã vào nhưng lúc ra không trích xuất được mặt: có ảnh bằng chứng và yêu cầu chờ; đồng ý ghi `manual_approved` và đóng phiên; từ chối giữ phiên mở; bắt buộc tên/lý do; chặn xác nhận lặp; khôi phục yêu cầu sau tạo lại client; không cho yêu cầu cũ đóng một phiên mới; chặn mã yêu cầu không tồn tại. Bài sai mặt hiện kỳ vọng chờ bảo vệ thay vì từ chối ngay khi có phiên vào.
+Lượt đầu tiên sau khi khởi động API mất khoảng 1,5 s vì nạp mô hình.
 
-Đã chạy giao diện riêng trên cổng 5175 cùng API cổng 8011, SQLite và ảnh tổng hợp trong thư mục tạm. Trên trình duyệt đã nhập thông tin người xử lý, tích xác nhận, bấm nút cho xe ra và quan sát trạng thái **MỞ — BẢO VỆ XÁC NHẬN** cùng ảnh đã lưu. API trả HTTP 200. Hai máy chủ kiểm thử được tắt sau kiểm tra; dữ liệu vận hành không bị thêm lượt thử. Frontend build thành công.
+### Đọc biển số trên tập test (76 ảnh có đáp án)
 
-Đây là kiểm thử luồng bằng AI giả lập không trả khuôn mặt, không phải thử khẩu trang trên người thật hoặc điều khiển thanh chắn IoT. Tên người xác nhận chưa gắn với tài khoản đăng nhập.
+| Tập | Số ảnh | Chỉ OCR (YOLOv8 + chars_best) | Kết hợp OCR + VLM | Thời gian trung vị / p90 |
+|---|---|---|---|---|
+| Bỏ 7 ảnh biển bị cắt (như benchmark) | 69 | 49 (71,0 %) | **63 (91,3 %)** | |
+| Biển rõ (`day_du`) | 66 | 48 (72,7 %) | **61 (92,4 %)** | 144 ms / 2,35 s |
 
-## Cập nhật tra cứu ảnh theo lượt — 12/11/2026
+VLM được gọi ở 17/76 ảnh nên p90 khoảng 2,3 s. Luật mới (hỏi VLM khi ký tự OCR có độ tin cậy < 0,5) gọi thêm VLM cho 2 biển OCR đọc đúng định dạng nhưng sai ký tự (`53X794327`, `51H09468`). VLM cũng không đọc được hai ảnh này nên trên tập test kết quả **không đổi**; luật được giữ vì không làm sai thêm biển nào và có ích khi VLM đọc được.
 
-**22/22 bài kiểm thử API đạt** (unittest 0,257 giây, không tính import). Thêm kiểm tra truy vấn 45 sự kiện qua ba trang không trùng/thiếu; mỗi sự kiện trả đúng URL ảnh và ảnh mở được; lọc biển số bỏ dấu phân cách và khoảng thời gian múi giờ +07 trước khi phân trang; chặn khoảng thời gian/phân trang không hợp lệ. Dữ liệu đều tổng hợp, SQLite và ảnh nằm trong thư mục tạm.
+### Lỗi Ollama đã sửa
 
-Đã dùng trình duyệt ở cổng kiểm thử 5175: mở Nhật ký, nhập biển số, bấm dòng xe ra và quan sát hộp chi tiết có mã lượt/URL ảnh kết thúc `_exit.jpg` đúng sự kiện đã chọn. Frontend build thành công. Tắt máy chủ kiểm thử sau kiểm tra; không thêm dữ liệu vào nhật ký vận hành.
+Với Ollama 0.40.18, một ảnh cụ thể (tập test, `82K37689`, nén JPEG chất lượng 92) làm runner hỏng: từ đó **mọi** câu trả lời, kể cả câu hỏi chữ, đều là `888888…` cho tới khi model được nạp lại. Trước khi sửa: 32/60 lượt đọc liên tiếp hỏng. Sau khi sửa (phát hiện chuỗi lặp, gỡ model, đọc lại bằng PNG): 0/60.
+
+## 3. Khuôn mặt (LFW)
+
+Chi tiết tại `02_Ket_qua_so_sanh_model/02_Khuon_mat_FaceNet_ArcFace/GIAI_THICH_KET_QUA.md`. Tại ngưỡng 0,45 trên 6.000 cặp LFW: độ chính xác 98,95 %, FAR 0,37 %, FRR 1,73 %, khoảng 49 ms/ảnh trên CPU.
+
+## 4. Chưa kiểm thử
+
+- Thử thật tại cổng trường với camera, mũ bảo hiểm, khẩu trang, ánh sáng ban đêm (phiếu `docs/MAU_KIEM_THU_THUC_TE.csv`).
+- Nhiều xe/người cùng lúc trong một khung hình, hai làn vào/ra chạy đồng thời.
+- Chạy sau HTTPS; tải lâu dài (nhiều giờ, hàng nghìn lượt).
+
+## Lịch sử
+
+Bản 12/11/2026 ghi "22/22 bài kiểm thử API đạt" nhưng bộ test đó không được đưa vào mã nguồn nên không chạy lại được. Bộ `tests/test_api.py` hiện tại viết lại và mở rộng các kịch bản đó (thêm đăng nhập, ủy quyền, giới hạn dung lượng, đồng thời).

@@ -1,0 +1,48 @@
+/* Đăng nhập, ủy quyền lấy xe hộ, tài khoản — cùng phong cách sáng của operations.css */
+.login-screen{min-height:100vh;display:grid;place-items:center;padding:24px;background:#f3f5f6}
+.login-card{width:min(420px,100%);background:#fff;border:1px solid #dbe1e4;border-radius:6px;padding:28px;display:flex;flex-direction:column;gap:16px}
+.login-card>p{font-size:13px}
+.login-card button{margin-top:4px}
+.header-tools{display:flex;align-items:center;gap:14px}
+.user-chip{font-size:12px;color:#35464f;background:#eef3f1;border:1px solid #d3e0da;border-radius:3px;padding:5px 9px;white-space:nowrap}
+.header-tools button{padding:6px 12px;font-size:12px}
+.cards{grid-template-columns:repeat(4,1fr)}
+.card-icon.amber{color:#a27a35}
+.history-status.manual_approved,.manual_approved{color:#2f6a8f}
+.review-operator{font-size:12px;margin:8px 0}
+main>.authorization-panel,main>.accounts-panel{display:none}
+.view-authorizations>.authorization-panel,.view-accounts>.accounts-panel{display:block}
+.access-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}
+.access-card{background:#fff;border:1px solid #dbe1e4;border-radius:5px;padding:22px;display:flex;flex-direction:column;gap:16px}
+.access-card h2{margin-bottom:4px}
+.access-card p{font-size:13px}
+.stack-form{display:flex;flex-direction:column;gap:14px}
+.stack-form label+label{margin-top:0}
+.stack-form button{margin-top:0;align-self:flex-start}
+.stack-form h3{margin-top:6px}
+.two-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.photo-picker{display:flex;gap:14px;align-items:center;border:1px dashed #c6d1d6;border-radius:4px;padding:12px}
+.photo-picker img,.photo-picker>span{width:120px;height:90px;object-fit:cover;background:#f3f5f6;display:grid;place-items:center;font-size:11px;color:#839098;text-align:center;flex:0 0 auto}
+.photo-picker>div{display:flex;flex-direction:column;gap:8px}
+.file-button{display:inline-block;cursor:pointer;border:1px solid #c6cfd4;border-radius:4px;padding:8px 12px;background:#fff;color:#34434d;font-weight:600}
+.file-button input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.file-button:focus-within{outline:3px solid #90b9df;outline-offset:2px}
+.form-message{font-size:12px;padding:9px 11px;border-radius:3px;border-left:3px solid}
+.form-message.error{background:#fcf1ef;border-color:#b65c52;color:#8a3e35}
+.form-message.success{background:#edf6f0;border-color:#308462;color:#245f50}
+.empty-note{color:#81909a;font-size:13px;padding:20px 0}
+.authorization-list,.account-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.authorization-list li{border:1px solid #e1e6e9;border-left:3px solid #abbac2;border-radius:4px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.authorization-list li.active{border-left-color:#308462}
+.authorization-list li.used{border-left-color:#2f6a8f}
+.authorization-list li>div{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.authorization-list li small{color:#7b8992;font-size:11px}
+.authorization-list li button{align-self:flex-start;padding:5px 10px;font-size:12px}
+.badge{font-size:10px;border-radius:3px;padding:3px 7px;background:#f1f4f5;color:#5d6d76}
+.badge.active{background:#e4f2ea;color:#245f50}.badge.used{background:#e5eff6;color:#2f6a8f}.badge.revoked,.badge.expired{background:#f6efe6;color:#8b6a3a}
+.account-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid #e8ecee;padding:8px 0}
+.account-list li>div{display:flex;flex-direction:column}
+.account-list small{color:#7b8992;font-size:11px}
+.account-list button{padding:5px 10px;font-size:12px}
+@media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.access-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.two-columns{grid-template-columns:1fr}.header-tools .user-chip{display:none}}
