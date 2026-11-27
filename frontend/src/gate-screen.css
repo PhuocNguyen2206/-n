@@ -1,0 +1,63 @@
+/* Màn Giám sát cổng: dải kết quả lớn đọc được từ xa, mọi thứ cần thao tác nằm trong một màn. */
+.view-monitor .page-heading{margin:10px 0 10px}
+.view-monitor .page-heading>div>p:not(.eyebrow){display:none}
+.view-monitor .page-heading h2{font-size:19px;margin:0}
+.view-monitor .page-heading time strong{font-size:17px}
+main.view-monitor{padding-bottom:12px}
+.view-monitor>header{height:60px}
+.gate-screen.lane-console{padding:14px 16px;margin-bottom:0}
+
+.gate-screen .monitor-toolbar{display:flex;align-items:end;gap:12px;margin:0 0 8px}
+.gate-screen .monitor-toolbar>label{min-width:220px;margin:0}
+.gate-screen .monitor-toolbar select{margin-bottom:0}
+.gate-screen .monitor-toolbar .live-badge{align-self:center}
+.gate-screen .monitor-buttons{margin-left:auto;flex:0 0 auto}
+.gate-screen .monitor-buttons button{font-size:13px;padding:9px 16px}
+.gate-screen .camera-settings{margin-bottom:10px;padding-bottom:8px}
+.gate-screen .camera-settings .lane-actions{align-items:end}
+.gate-screen .camera-settings .lane-actions button{flex:0 0 auto}
+
+/* Dải kết quả */
+.gate-banner{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:20px;padding:12px 18px;margin:0 0 12px;border-radius:6px;border:2px solid #c9d3d8;background:#f3f6f7;color:#34434d;min-height:92px;transition:background-color .2s,border-color .2s}
+.gate-banner-text{min-width:0}
+.gate-banner-text small{display:block;font-size:11px;font-weight:700;letter-spacing:.08em;opacity:.8}
+.gate-banner-text strong{display:block;font-size:34px;line-height:1.1;font-weight:800;letter-spacing:.01em;margin:2px 0}
+.gate-banner-text p{color:inherit;font-size:14px;margin-top:2px;overflow-wrap:anywhere}
+.gate-banner.info .gate-banner-text p{font-size:16px;font-weight:600;margin-top:4px}
+.gate-banner.scan{background:#eef4fa;border-color:#9bb8d3;color:#2c4a66}
+.gate-banner.allow{background:#1d7a4c;border-color:#155c39;color:#fff}
+.gate-banner.block{background:#b3261e;border-color:#8c1d17;color:#fff}
+.gate-banner.wait{background:#f5b301;border-color:#c98f00;color:#2b2100}
+.gate-plate{font-size:42px;line-height:1;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.03em;white-space:nowrap;color:#111;background:#fff;border:3px solid #111;border-radius:7px;padding:8px 16px;box-shadow:0 2px 0 #0002}
+.gate-banner.scan .gate-plate{border-color:#7d93a8;color:#41566b;font-size:30px}
+
+/* Thanh chắn mô phỏng: chỉ còn là một chỉ báo nhỏ */
+.barrier-chip{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:5px;background:#ffffffe6;color:#5f4a22;font-size:12px;font-weight:700;white-space:nowrap}
+.barrier-chip small{display:block;font-size:9px;font-weight:600;letter-spacing:.05em;color:#6b7f88}
+.barrier-chip.opened{color:#1d6a45}
+.barrier-chip .simulated-arm{width:34px;height:6px;margin:0 4px 0 0;transition:transform .3s}
+.barrier-chip button{font-size:11px;padding:4px 8px}
+
+/* Camera và cột phải cao vừa một màn hình laptop */
+.gate-screen .scan-workspace{grid-template-columns:minmax(0,1.6fr) minmax(280px,1fr);gap:12px}
+.gate-screen .camera-preview .lane-group>.live-tile{height:clamp(150px,calc(100vh - 470px),380px)}
+.gate-screen .face-feedback{margin-top:6px}
+.gate-screen .scan-receipt{position:static}
+.gate-screen .single-lane .receipt-photo img{height:clamp(120px,calc(100vh - 560px),300px)}
+.gate-screen .single-lane .receipt-empty{min-height:clamp(110px,calc(100vh - 560px),300px)}
+
+/* Yêu cầu bảo vệ: nút to, nằm ngay cạnh camera */
+.gate-screen .exit-review{border-bottom:0;background:#fff8e1}
+.gate-screen .exit-review h3{font-size:16px}
+.gate-screen .exit-review>p{font-size:12px}
+.gate-screen .review-evidence img{height:clamp(80px,calc(100vh - 640px),170px)}
+.gate-screen .review-buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+.gate-screen .review-buttons button{font-size:15px;font-weight:700;padding:13px 10px}
+.gate-screen .review-buttons .approve{background:#1d7a4c;border-color:#155c39}
+.gate-screen .review-buttons .approve:hover{background:#155c39}
+.gate-screen .review-buttons .reject{background:#b3261e;border-color:#8c1d17}
+.gate-screen .review-buttons .reject:hover{background:#8c1d17}
+
+@media(max-width:1100px){.gate-banner{grid-template-columns:minmax(0,1fr) auto}.barrier-chip{grid-column:1/-1;justify-self:start}}
+@media(max-width:760px){.gate-screen .monitor-toolbar{flex-wrap:wrap}.gate-screen .monitor-buttons{margin-left:0}.gate-banner{grid-template-columns:1fr;gap:10px}.gate-banner-text strong{font-size:26px}.gate-plate{font-size:30px;justify-self:start}.gate-screen .scan-workspace{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.gate-banner,.barrier-chip .simulated-arm{transition:none}}

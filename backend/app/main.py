@@ -2,7 +2,7 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -68,6 +68,10 @@ def get_face_service() -> FaceService:
     if face_service is None:
         face_service = FaceService()
     return face_service
+
+
+# Quét tự động ở lối ra: trong khoảng này sau khi xe được cho ra, khung hình lặp của xe đó không ghi nhật ký.
+EXIT_REPEAT_WINDOW_SECONDS = 60
 
 
 def now_iso() -> str:
@@ -280,7 +284,7 @@ async def verify_gate_image(
         raise HTTPException(422, "Cần hai ảnh theo thứ tự: khuôn mặt, biển số")
     if len(images) > 4:
         raise HTTPException(422, "Tối đa 4 ảnh cho một lượt quét")
-    plate, plate_confidence, plate_source, faces, frames = None, 0.0, None, [], []
+    plate, plate_confidence, plate_source, faces, frames = None, None, None, [], []
     for image in images:
         image_data = await read_image_upload(image)
         # Decode every input before analysing or saving, including a dedicated face frame.
@@ -291,7 +295,7 @@ async def verify_gate_image(
             try:
                 analysis = await run_in_threadpool(get_vision_service().analyze_image, image_data)
                 if not plate and analysis.plate_text:
-                    plate, plate_confidence = analysis.plate_text, analysis.plate_confidence or 0.0
+                    plate, plate_confidence = analysis.plate_text, analysis.plate_confidence  # None khi VLM đọc: VLM không trả độ tin cậy
                     plate_source = analysis.plate_source
             except ValueError:
                 pass
@@ -334,6 +338,16 @@ async def verify_gate_image(
             decision, reason = "approved", "Đã ghi nhận xe và khuôn mặt tại thời điểm vào"
         elif plate:
             session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+            recent_exit = None if session or not automatic else connection.execute(
+                "SELECT exit_event_id, exited_at FROM gate_sessions WHERE plate_number = ? AND status = 'closed' AND julianday(exited_at) >= julianday(?) ORDER BY exited_at DESC LIMIT 1",
+                (plate, (datetime.now(timezone.utc) - timedelta(seconds=EXIT_REPEAT_WINDOW_SECONDS)).isoformat()),
+            ).fetchone()
+            if recent_exit:
+                # Xe vừa được cho ra còn đứng trước camera: như lượt vào lặp, không ghi thêm "Từ chối".
+                return RecognitionResult(
+                    event_id=recent_exit["exit_event_id"], decision="approved", reason="Xe vừa được cho ra; bỏ qua khung hình lặp",
+                    plate_number=plate, face_detected=True, face_detection_confidence=face_confidence, plate_source=plate_source,
+                )
             if not session:
                 reason = "Không có lượt vào đang mở của biển số này"
             else:

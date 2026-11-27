@@ -353,3 +353,26 @@ def test_data_survives_restart(client):
         assert restarted.get("/api/v1/gate/exit-reviews/pending").json()[0]["review_id"] == review["review_id"]
         assert restarted.get(review["evidence_url"]).status_code == 200
         assert restarted.get("/api/v1/dashboard/summary").json()["open_sessions"] == 1
+
+
+def test_vlm_plate_keeps_unknown_confidence(client, monkeypatch):
+    """VLM không trả độ tin cậy: nhật ký phải ghi NULL, không ghi 0,0 như thể OCR chắc chắn sai."""
+    monkeypatch.setattr(FakeVisionService, "analyze_image",
+                        lambda self, data: FakeAnalysis(label_of(data), None, "vlm") if label_of(data)[:2].isdigit() else FakeAnalysis(None, None, None))
+    assert scan(client, "an", "59F113860", "entry")["plate_source"] == "vlm"
+    recorded = events(client)[0]
+    assert (recorded["plate_source"], recorded["plate_confidence"]) == ("vlm", None)
+
+
+def test_automatic_exit_repeat_after_release_is_not_logged(client):
+    scan(client, "an", "59F113860", "entry")
+    exited = scan(client, "an", "59F113860", "exit")
+    assert exited["decision"] == "approved"
+    count = len(events(client))
+    repeat = scan(client, "an", "59F113860", "exit", automatic=True)
+    assert (repeat["event_id"], repeat["decision"]) == (exited["event_id"], "approved")
+    assert len(events(client)) == count
+    # Quét thủ công và biển chưa từng vào vẫn ghi "Từ chối" như trước.
+    assert scan(client, "an", "59F113860", "exit")["decision"] == "denied"
+    assert scan(client, "an", "43A12345", "exit", automatic=True)["decision"] == "denied"
+    assert len(events(client)) == count + 2
