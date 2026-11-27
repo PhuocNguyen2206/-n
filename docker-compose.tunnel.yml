@@ -1,0 +1,12 @@
+# Link công khai tạm thời qua Cloudflare Tunnel (miễn phí, không cần tên miền, không mở cổng router).
+# Bật:   docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml up -d
+# Xem link:  docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml logs tunnel | grep trycloudflare
+# Tắt link (hệ thống trong mạng nội bộ vẫn chạy):  docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml rm -sf tunnel
+# Lưu ý: link đổi mỗi khi container tunnel khởi động lại (khởi động lại Mac, Docker...).
+services:
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://web:8080
+    depends_on:
+      - web

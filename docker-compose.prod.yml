@@ -1,0 +1,45 @@
+# Bản chạy thật. Dùng:  docker compose -f docker-compose.prod.yml up -d --build
+# Khác bản dev (docker-compose.yml): giao diện build tĩnh sau Caddy (cổng 80/443, HTTPS),
+# API không mở cổng ra ngoài, cookie đăng nhập chỉ gửi qua HTTPS, tự khởi động lại khi máy bật.
+name: gate-prod
+
+services:
+  api:
+    build: ./backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/models:/app/models
+    environment:
+      # Ollama chạy trên máy host (không chạy trong container).
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - VLM_MODEL=qwen2.5vl:3b
+      # Chỉ dùng khi cơ sở dữ liệu chưa có tài khoản; lần đăng nhập đầu vẫn bắt đổi mật khẩu.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - COOKIE_SECURE=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - SITE_ADDRESS=${SITE_ADDRESS:-localhost}
+      - DEFAULT_SNI=${DEFAULT_SNI:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

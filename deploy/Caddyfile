@@ -1,0 +1,38 @@
+# SITE_ADDRESS: tên miền (Caddy tự lấy chứng chỉ Let's Encrypt) hoặc "localhost, 192.168.1.50"
+# trong mạng nội bộ (Caddy tự cấp chứng chỉ nội bộ). Camera trên trình duyệt chỉ chạy qua HTTPS
+# hoặc trên chính máy chủ (localhost).
+{
+	# Trình duyệt không gửi tên (SNI) khi vào bằng IP: dùng chứng chỉ của địa chỉ này.
+	default_sni {$DEFAULT_SNI:localhost}
+}
+
+(app) {
+	encode gzip
+
+	@backend path /api/* /evidence/* /training-data/*
+	handle @backend {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		Permissions-Policy "camera=(self), microphone=()"
+		-Server
+	}
+}
+
+{$SITE_ADDRESS:localhost} {
+	import app
+}
+
+# Cổng nội bộ cho Cloudflare Tunnel (docker-compose.tunnel.yml); Cloudflare lo HTTPS bên ngoài.
+http://:8080 {
+	import app
+}
