@@ -566,3 +566,192 @@ def test_face_from_vehicle_behind_is_not_saved_with_front_vehicle(client, monkey
     assert scan(client, "an", "59F113860", "entry")["decision"] == "approved"
     monkeypatch.setattr(FakeFaceService, "extract_all", lambda self, data: [FakeFace(IDENTITY["binh"], 0.9999, (0, 0, 100, 120))])
     assert scan(client, "binh", "59F113860", "exit")["decision"] == "manual_review"
+
+
+# ---------- Đăng ký chờ duyệt ----------
+
+NEW = {"username": "gv.lan", "full_name": "  Nguyễn Thị Lan  ", "password": "GiangVien#1"}
+
+
+@pytest.fixture()
+def registration(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_REGISTRATION", True)
+
+
+def test_registration_is_off_by_default(env, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_REGISTRATION", False)
+    with TestClient(main_module.app) as anonymous:
+        assert anonymous.get("/api/v1/auth/register").json() == {"enabled": False}
+        assert anonymous.post("/api/v1/auth/register", json=NEW).status_code == 404
+
+
+def test_registered_account_works_only_after_admin_approval(client, registration):
+    with TestClient(main_module.app) as visitor:
+        created = visitor.post("/api/v1/auth/register", json=NEW)
+        assert created.status_code == 201 and created.json() == {"status": "pending"} and not visitor.cookies
+        waiting = visitor.post("/api/v1/auth/login", json={"username": "gv.lan", "password": "GiangVien#1"})
+        assert waiting.status_code == 403 and "chờ" in waiting.json()["detail"] and not visitor.cookies
+        assert visitor.post("/api/v1/auth/login", json={"username": "gv.lan", "password": "sai-mat-khau"}).status_code == 401
+        assert visitor.get("/api/v1/events").status_code == 401
+        assert visitor.get("/api/v1/account-requests").status_code == 401
+        assert visitor.post("/api/v1/account-requests/gv.lan/approve").status_code == 401
+
+        pending = client.get("/api/v1/account-requests").json()
+        assert [(item["username"], item["full_name"]) for item in pending] == [("gv.lan", "Nguyễn Thị Lan")]
+        assert "password_hash" not in pending[0]
+        assert client.post("/api/v1/account-requests/gv.lan/approve").json()["role"] == "guard"
+        assert client.get("/api/v1/account-requests").json() == []
+        assert client.post("/api/v1/account-requests/gv.lan/approve").status_code == 404
+
+        approved = visitor.post("/api/v1/auth/login", json={"username": "gv.lan", "password": "GiangVien#1"})
+        assert approved.status_code == 200 and approved.json()["must_change_password"] is False
+        assert visitor.get("/api/v1/events").status_code == 200
+        assert visitor.get("/api/v1/account-requests").status_code == 403
+        assert visitor.post("/api/v1/accounts", json={"username": "x123", "full_name": "Không được", "password": "Khongduoc#1"}).status_code == 403
+
+
+def test_rejected_registration_never_becomes_an_account(client, registration):
+    with TestClient(main_module.app) as visitor:
+        visitor.post("/api/v1/auth/register", json=NEW)
+        assert client.delete("/api/v1/account-requests/gv.lan").status_code == 200
+        assert client.delete("/api/v1/account-requests/gv.lan").status_code == 404
+        assert visitor.post("/api/v1/auth/login", json={"username": "gv.lan", "password": "GiangVien#1"}).status_code == 401
+        assert visitor.post("/api/v1/auth/register", json=NEW).status_code == 201
+
+
+def test_registration_cannot_take_names_escalate_or_flood(client, registration, monkeypatch):
+    with TestClient(main_module.app) as visitor:
+        for taken in ("admin", "ADMIN"):
+            assert visitor.post("/api/v1/auth/register", json=NEW | {"username": taken}).status_code == 409
+        assert visitor.post("/api/v1/auth/register", json=NEW | {"password": "ngan"}).status_code == 422
+        assert visitor.post("/api/v1/auth/register", json=NEW | {"username": "co dau cach"}).status_code == 422
+        # Gửi kèm vai trò quản trị cũng chỉ thành tài khoản bảo vệ.
+        assert visitor.post("/api/v1/auth/register", json=NEW | {"role": "admin"}).status_code == 201
+        assert visitor.post("/api/v1/auth/register", json=NEW | {"username": "GV.Lan"}).status_code == 409
+        # Quản trị viên cũng không tạo đè lên tên đang chờ.
+        assert client.post("/api/v1/accounts", json=NEW).status_code == 409
+        assert client.post("/api/v1/account-requests/gv.lan/approve").json()["role"] == "guard"
+        monkeypatch.setattr(config, "MAX_PENDING_REGISTRATIONS", 2)
+        codes = [visitor.post("/api/v1/auth/register", json=NEW | {"username": f"khach{n}"}).status_code for n in range(3)]
+        assert codes == [201, 201, 429]
+        monkeypatch.setattr(config, "MAX_PENDING_REGISTRATIONS", 50)
+        monkeypatch.setattr(config, "REGISTRATIONS_PER_MINUTE", 2)
+        assert visitor.post("/api/v1/auth/register", json=NEW | {"username": "khach9"}).status_code == 429
+
+
+# ---------- Mỗi bảo vệ một lịch sử ----------
+
+def new_guard(admin, username):
+    admin.post("/api/v1/accounts", json={"username": username, "full_name": username, "password": "BaoVe#2026"})
+    guard = TestClient(main_module.app)
+    login(guard, username, "BaoVe#2026")
+    assert guard.post("/api/v1/auth/change-password", json={"current_password": "BaoVe#2026", "new_password": "BaoVe#2027"}).status_code == 200
+    return guard
+
+
+def history(client):
+    return {
+        "events": [item["plate_number"] for item in client.get("/api/v1/events").json()],
+        "search": client.get("/api/v1/events/search").json()["total"],
+        "summary": client.get("/api/v1/dashboard/summary").json()["events"],
+        "open": client.get("/api/v1/dashboard/summary").json()["open_sessions"],
+        "sessions": [item["plate_number"] for item in client.get("/api/v1/sessions/recent").json()],
+        "reviews": [item["plate_number"] for item in client.get("/api/v1/gate/exit-reviews/pending").json()],
+    }
+
+
+def test_new_guard_does_not_see_other_peoples_history(client):
+    entry = scan(client, "an", "59F113860", "entry")
+    review = scan(client, "dung", "59F113860", "exit")
+    guard = new_guard(client, "baove_moi")
+    assert history(guard) == {"events": [], "search": 0, "summary": 0, "open": 0, "sessions": [], "reviews": []}
+    for url in (entry["evidence_url"], review["evidence_url"]):
+        assert guard.get(url).status_code == 404 and client.get(url).status_code == 200
+    assert guard.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve", json={"action": "approve"}).status_code == 404
+
+    own = scan(guard, "binh", "43A12345", "entry")
+    assert history(guard) == {"events": ["43A12345"], "search": 1, "summary": 1, "open": 1, "sessions": ["43A12345"], "reviews": []}
+    assert guard.get(own["evidence_url"]).status_code == 200
+    seen_by_admin = history(client)
+    assert seen_by_admin["summary"] == 3 and seen_by_admin["open"] == 2
+    assert {item["operator_username"] for item in client.get("/api/v1/events").json()} == {"admin", "baove_moi"}
+    another = new_guard(client, "baove_khac")
+    assert history(another)["events"] == [] and another.get(own["evidence_url"]).status_code == 404
+
+
+def open_plates(client):
+    return [item["plate_number"] for item in client.get("/api/v1/sessions/recent", params={"limit": 20}).json() if item["status"] == "open"]
+
+
+def test_one_account_cannot_let_out_another_accounts_vehicle(client):
+    scan(client, "an", "59F113860", "entry")
+    guard = new_guard(client, "khach_a")
+    refused = scan(guard, "an", "59F113860", "exit")
+    assert refused["decision"] == "denied" and "Không có lượt vào" in refused["reason"]
+    assert not refused.get("review_id") and refused.get("entry_evidence_url") is None
+    assert history(guard)["reviews"] == [] and history(guard)["open"] == 0
+    assert client.get("/api/v1/dashboard/summary").json()["open_sessions"] == 1
+    # Chủ của lượt vào vẫn cho ra bình thường.
+    assert scan(client, "an", "59F113860", "exit")["decision"] == "approved"
+
+
+def test_same_plate_lives_separately_in_each_account(client):
+    first = new_guard(client, "khach_a")
+    second = new_guard(client, "khach_b")
+    scan(first, "an", "59F113860", "entry")
+    # Cùng biển số ở tài khoản khác là một xe khác: không bị coi là khung lặp, không thấy xe của nhau.
+    other = scan(second, "binh", "59F113860", "entry")
+    assert other["decision"] == "approved" and "lặp" not in other["reason"]
+    assert open_plates(first) == ["59F113860"] and open_plates(second) == ["59F113860"]
+    assert scan(second, "binh", "59F113860", "exit")["decision"] == "approved"
+    assert open_plates(first) == ["59F113860"] and open_plates(second) == []
+    # Mặt của người bên tài khoản kia không mở được xe bên này.
+    assert scan(first, "binh", "59F113860", "exit")["decision"] == "manual_review"
+    assert scan(first, "an", "59F113860", "exit")["decision"] == "approved"
+    # Vừa được cho ra ở tài khoản này không ảnh hưởng tới tài khoản khác.
+    third = scan(client, "chi", "59F113860", "exit", automatic=True)
+    assert third["decision"] == "denied"
+
+
+def test_pending_review_and_guard_approval_stay_in_their_account(client):
+    guard = new_guard(client, "khach_a")
+    scan(guard, "an", "59F113860", "entry")
+    review = scan(guard, "dung", "59F113860", "exit")
+    # Quản trị viên xem được trong nhật ký nhưng không bị hiện yêu cầu của người khác ở màn cổng, và không xử lý thay.
+    assert history(client)["reviews"] == [] and "59F113860" in history(client)["events"]
+    path = f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve"
+    assert client.post(path, json={"action": "approve"}).status_code == 404
+    assert guard_entry(client, "59F113860").status_code == 200
+    assert history(guard)["reviews"] == ["59F113860"]
+    assert guard.post(path, json={"action": "approve"}).json()["decision"] == "manual_approved"
+    assert open_plates(guard) == [] and client.get("/api/v1/dashboard/summary").json()["open_sessions"] == 1
+
+
+# ---------- Giữ đăng nhập khi trạm đang dùng ----------
+
+def set_session_expiry(delta):
+    with database.get_connection() as connection:
+        connection.execute("UPDATE auth_sessions SET expires_at = ?", ((datetime.now(timezone.utc) + delta).isoformat(),))
+
+
+def session_expiry():
+    with database.get_connection() as connection:
+        return datetime.fromisoformat(connection.execute("SELECT MAX(expires_at) FROM auth_sessions").fetchone()[0])
+
+
+def test_session_in_use_is_extended_and_cookie_renewed(client):
+    assert "set-cookie" not in client.get("/api/v1/auth/me").headers  # vừa đăng nhập: chưa cần gia hạn
+    set_session_expiry(timedelta(minutes=5))  # trạm đã mở gần hết 12 giờ
+    for path in ("/api/v1/events", "/api/v1/dashboard/summary"):
+        set_session_expiry(timedelta(minutes=5))
+        response = client.get(path)
+        assert response.status_code == 200 and "Max-Age=43200" in response.headers["set-cookie"], path
+        assert session_expiry() - datetime.now(timezone.utc) > timedelta(hours=11, minutes=59)
+    assert client.get("/api/v1/events").status_code == 200
+
+
+def test_idle_session_still_expires(client):
+    set_session_expiry(timedelta(seconds=-1))
+    response = client.get("/api/v1/events")
+    assert response.status_code == 401 and "set-cookie" not in response.headers
+    assert session_expiry() <= datetime.now(timezone.utc)

@@ -35,7 +35,7 @@ CROWDED_PLATE_RATIO = _float("CROWDED_PLATE_RATIO", 0.6)
 FACE_MIN_RELATIVE_SIZE = _float("FACE_MIN_RELATIVE_SIZE", 0.6)
 # Dung lượng tối đa của một ảnh tải lên (MB).
 MAX_UPLOAD_MB = _float("MAX_UPLOAD_MB", 10)
-# Phiên đăng nhập của bảo vệ (giờ).
+# Phiên đăng nhập hết hạn sau chừng này giờ KHÔNG hoạt động; trang đang mở thì phiên được gia hạn liên tục.
 SESSION_HOURS = _float("SESSION_HOURS", 12)
 # Tài khoản quản trị tạo lần đầu khi cơ sở dữ liệu chưa có tài khoản nào.
 DEFAULT_ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -43,7 +43,13 @@ DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 # Chế độ "Xem thử": khách chưa đăng nhập được gửi ảnh để thử nhận diện (không lưu). Mặc định tắt.
 GUEST_DEMO = os.getenv("GUEST_DEMO", "0").strip().lower() in {"1", "true", "yes", "on"}
 # Giới hạn chung cho mọi khách, để người ngoài không làm nghẽn máy chủ đang chạy cổng thật.
-GUEST_DEMO_PER_MINUTE = int(_float("GUEST_DEMO_PER_MINUTE", 30))
+# Màn Xem thử tự quét: một khách bật hai camera gửi khoảng 60 ảnh mỗi phút, 150 đủ cho 2 đến 3 khách cùng lúc.
+GUEST_DEMO_PER_MINUTE = int(_float("GUEST_DEMO_PER_MINUTE", 150))
 GUEST_DEMO_MAX_PIXELS = 25_000_000
+# Cho người ngoài tự đăng ký tài khoản bảo vệ; chỉ đăng nhập được sau khi quản trị viên duyệt. Mặc định tắt.
+ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "0").strip().lower() in {"1", "true", "yes", "on"}
+# Chặn đăng ký rác: số yêu cầu mới trong một phút và số yêu cầu được chờ cùng lúc.
+REGISTRATIONS_PER_MINUTE = 10
+MAX_PENDING_REGISTRATIONS = 50
 # Đặt COOKIE_SECURE=1 khi chạy sau HTTPS.
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}

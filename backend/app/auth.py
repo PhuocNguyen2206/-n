@@ -59,7 +59,12 @@ class StaffUser(BaseModel):
     must_change_password: bool = False
 
 
-def current_user(request: Request) -> StaffUser:
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", secure=config.COOKIE_SECURE,
+                        max_age=int(config.SESSION_HOURS * 3600), path="/")
+
+
+def current_user(request: Request, response: Response) -> StaffUser:
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(401, "Cần đăng nhập")
@@ -68,8 +73,16 @@ def current_user(request: Request) -> StaffUser:
             "SELECT a.username, a.full_name, a.role, a.must_change_password, s.expires_at FROM auth_sessions s JOIN staff_accounts a ON a.username = s.username WHERE s.token_hash = ? AND a.active = 1",
             (_token_hash(token),),
         ).fetchone()
-        if row is None or datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+        now = datetime.now(timezone.utc)
+        if row is None or datetime.fromisoformat(row["expires_at"]) <= now:
             raise HTTPException(401, "Phiên đăng nhập đã hết hạn")
+        # Trạm bảo vệ mở cả ngày, các ca thay nhau ngồi: còn hoạt động thì gia hạn, không tự đăng xuất.
+        # Chỉ ghi lại khi đã qua 1/12 thời hạn (mặc định 1 giờ) để không ghi cơ sở dữ liệu ở mọi yêu cầu.
+        lifetime = timedelta(hours=config.SESSION_HOURS)
+        if datetime.fromisoformat(row["expires_at"]) - now <= lifetime * 11 / 12:
+            connection.execute("UPDATE auth_sessions SET expires_at = ? WHERE token_hash = ?",
+                               ((now + lifetime).isoformat(), _token_hash(token)))
+            _set_session_cookie(response, token)
     return StaffUser(username=row["username"], full_name=row["full_name"], role=row["role"], must_change_password=bool(row["must_change_password"]))
 
 
@@ -96,11 +109,10 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=8, max_length=200)
 
 
-class AccountCreate(BaseModel):
+class Registration(BaseModel):
     username: str = Field(min_length=3, max_length=60, pattern=r"^[a-zA-Z0-9_.-]+$")
     full_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=8, max_length=200)
-    role: Literal["admin", "guard"] = "guard"
 
     @field_validator("full_name", mode="before")
     @classmethod
@@ -108,11 +120,25 @@ class AccountCreate(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class AccountCreate(Registration):
+    role: Literal["admin", "guard"] = "guard"
+
+
+class AccountRequest(BaseModel):
+    username: str
+    full_name: str
+    created_at: str
+
+
 @router.post("/auth/login", response_model=StaffUser)
 def login(request: LoginRequest, response: Response) -> StaffUser:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM staff_accounts WHERE username = ? AND active = 1", (request.username.strip(),)).fetchone()
         if row is None or not verify_password(request.password, row["password_hash"]):
+            # Chỉ người biết đúng mật khẩu đăng ký mới được báo là đang chờ duyệt.
+            waiting = connection.execute("SELECT password_hash FROM account_requests WHERE username = ?", (request.username.strip(),)).fetchone()
+            if row is None and waiting and verify_password(request.password, waiting["password_hash"]):
+                raise HTTPException(403, "Tài khoản đang chờ quản trị viên duyệt")
             raise HTTPException(401, "Sai tên đăng nhập hoặc mật khẩu")
         token = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc)
@@ -121,8 +147,7 @@ def login(request: LoginRequest, response: Response) -> StaffUser:
             "INSERT INTO auth_sessions (token_hash, username, created_at, expires_at) VALUES (?, ?, ?, ?)",
             (_token_hash(token), row["username"], now.isoformat(), (now + timedelta(hours=config.SESSION_HOURS)).isoformat()),
         )
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", secure=config.COOKIE_SECURE,
-                        max_age=int(config.SESSION_HOURS * 3600), path="/")
+    _set_session_cookie(response, token)
     return StaffUser(username=row["username"], full_name=row["full_name"], role=row["role"], must_change_password=bool(row["must_change_password"]))
 
 
@@ -166,6 +191,8 @@ def create_account(request: AccountCreate, _: StaffUser = Depends(admin_user)) -
     with get_connection() as connection:
         if connection.execute("SELECT 1 FROM staff_accounts WHERE username = ?", (request.username,)).fetchone():
             raise HTTPException(409, "Tên đăng nhập đã tồn tại")
+        if connection.execute("SELECT 1 FROM account_requests WHERE lower(username) = lower(?)", (request.username,)).fetchone():
+            raise HTTPException(409, "Tên đăng nhập này đang có người đăng ký chờ duyệt")
         connection.execute(
             "INSERT INTO staff_accounts (username, full_name, role, password_hash, must_change_password, created_at) VALUES (?, ?, ?, ?, 1, ?)",
             (request.username, request.full_name, request.role, hash_password(request.password), datetime.now(timezone.utc).isoformat()),
@@ -182,4 +209,72 @@ def deactivate_account(username: str, user: StaffUser = Depends(admin_user)) -> 
         if result.rowcount == 0:
             raise HTTPException(404, "Không tìm thấy tài khoản")
         connection.execute("DELETE FROM auth_sessions WHERE username = ?", (username,))
+    return {"status": "ok"}
+
+
+# ---------- Đăng ký chờ duyệt ----------
+
+@router.get("/auth/register")
+def registration_status() -> dict[str, bool]:
+    return {"enabled": config.ALLOW_REGISTRATION}
+
+
+@router.post("/auth/register", status_code=201)
+def register(request: Registration) -> dict[str, str]:
+    """Người ngoài gửi yêu cầu cấp tài khoản. Không tạo phiên, không có quyền gì cho tới khi được duyệt."""
+    if not config.ALLOW_REGISTRATION:
+        raise HTTPException(404, "Chức năng đăng ký đang tắt")
+    now = datetime.now(timezone.utc)
+    with get_connection() as connection:
+        # Khóa ghi trước khi kiểm tra: hai người đăng ký cùng lúc không thể lấy trùng tên hoặc vượt giới hạn.
+        connection.execute("BEGIN IMMEDIATE")
+        pending, recent = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(created_at > ?), 0) FROM account_requests",
+            ((now - timedelta(minutes=1)).isoformat(),),
+        ).fetchone()
+        if pending >= config.MAX_PENDING_REGISTRATIONS or recent >= config.REGISTRATIONS_PER_MINUTE:
+            raise HTTPException(429, "Đang có quá nhiều đăng ký. Vui lòng thử lại sau.")
+        taken = connection.execute(
+            "SELECT 1 FROM staff_accounts WHERE lower(username) = lower(?) UNION ALL SELECT 1 FROM account_requests WHERE lower(username) = lower(?)",
+            (request.username, request.username),
+        ).fetchone()
+        if taken:
+            raise HTTPException(409, "Tên đăng nhập đã được dùng. Hãy chọn tên khác.")
+        connection.execute(
+            "INSERT INTO account_requests (username, full_name, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (request.username, request.full_name, hash_password(request.password), now.isoformat()),
+        )
+    return {"status": "pending"}
+
+
+@router.get("/account-requests", response_model=list[AccountRequest])
+def list_account_requests(_: StaffUser = Depends(admin_user)) -> list[AccountRequest]:
+    with get_connection() as connection:
+        rows = connection.execute("SELECT username, full_name, created_at FROM account_requests ORDER BY created_at").fetchall()
+    return [AccountRequest(**dict(row)) for row in rows]
+
+
+@router.post("/account-requests/{username}/approve", response_model=StaffUser)
+def approve_account_request(username: str, _: StaffUser = Depends(admin_user)) -> StaffUser:
+    """Duyệt thành tài khoản bảo vệ. Người đăng ký tự đặt mật khẩu nên không bắt đổi lại."""
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT * FROM account_requests WHERE username = ?", (username,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Yêu cầu không còn tồn tại")
+        if connection.execute("SELECT 1 FROM staff_accounts WHERE lower(username) = lower(?)", (username,)).fetchone():
+            raise HTTPException(409, "Tên đăng nhập đã có tài khoản. Hãy từ chối yêu cầu này.")
+        connection.execute(
+            "INSERT INTO staff_accounts (username, full_name, role, password_hash, must_change_password, created_at) VALUES (?, ?, 'guard', ?, 0, ?)",
+            (row["username"], row["full_name"], row["password_hash"], datetime.now(timezone.utc).isoformat()),
+        )
+        connection.execute("DELETE FROM account_requests WHERE username = ?", (username,))
+    return StaffUser(username=row["username"], full_name=row["full_name"], role="guard")
+
+
+@router.delete("/account-requests/{username}")
+def reject_account_request(username: str, _: StaffUser = Depends(admin_user)) -> dict:
+    with get_connection() as connection:
+        if connection.execute("DELETE FROM account_requests WHERE username = ?", (username,)).rowcount == 0:
+            raise HTTPException(404, "Yêu cầu không còn tồn tại")
     return {"status": "ok"}

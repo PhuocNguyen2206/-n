@@ -144,9 +144,39 @@ def _serve_file(directory: Path, filename: str) -> FileResponse:
     return FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
 
 
+def own_records(user: StaffUser, column: str = "operator_username") -> tuple[list[str], list[str]]:
+    """Điều kiện lọc khi xem lại: bảo vệ chỉ xem lượt của mình, quản trị viên xem tất cả."""
+    return ([], []) if user.role == "admin" else ([f"{column} = ?"], [user.username])
+
+
+def owned_session(alias: str = "gate_sessions") -> str:
+    """Điều kiện SQL "phiên xe thuộc tài khoản này", đi kèm tham số ``session_owner(...)``.
+
+    Mỗi tài khoản có danh sách xe riêng: xe tài khoản nào cho vào thì chỉ tài khoản đó
+    cho ra. Phiên thuộc về người ghi lượt vào; phiên cũ không ghi người xử lý thuộc
+    tài khoản quản trị mặc định.
+    """
+    return f"COALESCE((SELECT operator_username FROM access_events WHERE access_events.id = {alias}.entry_event_id), ?) = ?"
+
+
+def session_owner(username: str) -> tuple[str, str]:
+    return config.DEFAULT_ADMIN_USERNAME, username
+
+
+def can_view_evidence(connection, user: StaffUser, filename: str) -> bool:
+    if user.role == "admin":
+        return True
+    return connection.execute(
+        "SELECT 1 FROM access_events WHERE evidence_path = ? AND operator_username = ?", (filename, user.username),
+    ).fetchone() is not None
+
+
 @app.get("/evidence/{filename}")
-def get_evidence(filename: str, _: StaffUser = Depends(active_user)) -> FileResponse:
-    """Ảnh bằng chứng có khuôn mặt: chỉ người đã đăng nhập mới xem được."""
+def get_evidence(filename: str, user: StaffUser = Depends(active_user)) -> FileResponse:
+    """Ảnh bằng chứng có khuôn mặt: phải đăng nhập, bảo vệ chỉ xem ảnh thuộc lượt của mình."""
+    with get_connection() as connection:
+        if not can_view_evidence(connection, user, filename):
+            raise HTTPException(404, "Không tìm thấy tệp")
     return _serve_file(EVIDENCE_DIRECTORY, filename)
 
 
@@ -204,7 +234,7 @@ async def demo_analyze(image: UploadFile = File(...), lane: Literal["face", "pla
     ``lane`` cho biết ảnh đến từ camera nào để chỉ chạy đúng phần nhận diện đó; bỏ trống thì chạy cả hai.
     """
     if not config.GUEST_DEMO:
-        raise HTTPException(404, "Chế độ xem thử đang tắt")
+        raise HTTPException(404, "Chế độ dùng thử đang tắt")
     image_data = await read_image_upload(image)
     ensure_decodable(image_data)
     with Image.open(BytesIO(image_data)) as header:
@@ -258,7 +288,7 @@ def record_manual_gate_event(request: ManualGateEventRequest, user: StaffUser = 
 
 def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes], score: float | None, operator: str) -> RecognitionResult | None:
     """A review belongs to one open session, with immutable scan evidence."""
-    session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+    session = connection.execute(f"SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' AND {owned_session()} ORDER BY entered_at DESC LIMIT 1", (plate, *session_owner(operator))).fetchone()
     if session is None:
         return None
     pending = connection.execute("SELECT r.id AS review_id, e.* FROM exit_reviews r JOIN access_events e ON e.id = r.event_id WHERE r.session_id = ? AND r.status = 'pending' LIMIT 1", (session["id"],)).fetchone()
@@ -280,9 +310,9 @@ def prepare_exit_review(connection, plate: str, reason: str, frames: list[bytes]
 
 
 @app.get("/api/v1/gate/exit-reviews/pending")
-def pending_exit_reviews(_: StaffUser = Depends(active_user)) -> list[dict]:
+def pending_exit_reviews(user: StaffUser = Depends(active_user)) -> list[dict]:
     with get_connection() as connection:
-        rows = connection.execute("SELECT r.id AS review_id, e.id AS event_id, e.plate_number, e.reason, e.evidence_path, e.face_confidence AS face_similarity, e.occurred_at AS captured_at, s.entry_evidence_path, s.entered_at FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.status = 'pending' AND s.status = 'open' ORDER BY e.occurred_at DESC LIMIT 20").fetchall()
+        rows = connection.execute(f"SELECT r.id AS review_id, e.id AS event_id, e.plate_number, e.reason, e.evidence_path, e.face_confidence AS face_similarity, e.occurred_at AS captured_at, s.entry_evidence_path, s.entered_at FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.status = 'pending' AND s.status = 'open' AND {owned_session('s')} ORDER BY e.occurred_at DESC LIMIT 20", session_owner(user.username)).fetchall()
         return [dict(row) | {"evidence_url": evidence_url(row["evidence_path"]), "entry_evidence_url": evidence_url(row["entry_evidence_path"])} for row in rows]
 
 
@@ -291,7 +321,7 @@ def resolve_exit_review(review_id: str, request: ExitReviewResolution, user: Sta
     with get_connection() as connection:
         # Serialise approvals; a second click/client cannot close a different session.
         connection.execute("BEGIN IMMEDIATE")
-        review = connection.execute("SELECT r.status AS review_status, r.session_id, e.*, s.status AS session_status FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.id = ?", (review_id,)).fetchone()
+        review = connection.execute("SELECT r.status AS review_status, r.session_id, e.*, s.status AS session_status FROM exit_reviews r JOIN access_events e ON e.id = r.event_id JOIN gate_sessions s ON s.id = r.session_id WHERE r.id = ? AND " + owned_session("s"), (review_id, *session_owner(user.username))).fetchone()
         if review is None:
             raise HTTPException(404, "Không tìm thấy yêu cầu xác nhận")
         if review["review_status"] != "pending" or review["session_status"] != "open":
@@ -344,7 +374,7 @@ async def approve_entry_by_guard(
     reason = f"[BẢO VỆ XÁC NHẬN] Cho xe vào khi khuôn mặt không nhận diện rõ · Người xử lý: {user.full_name} ({user.username})"
     with get_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        if connection.execute("SELECT 1 FROM gate_sessions WHERE plate_number = ? AND status = 'open'", (plate_number,)).fetchone():
+        if connection.execute(f"SELECT 1 FROM gate_sessions WHERE plate_number = ? AND status = 'open' AND {owned_session()}", (plate_number, *session_owner(user.username))).fetchone():
             raise HTTPException(409, "Xe này đã có lượt vào đang mở")
         evidence_path = save_evidence(event_id, "entry", frames)
         connection.execute(
@@ -429,7 +459,7 @@ async def verify_gate_image(
         if automatic and (not plate or not faces):
             waiting_decision = "manual_review"
             waiting_reason = "Đang chờ biển số xe rõ" if not plate else UNCLEAR_REASON if face_unclear else "Đang chờ khuôn mặt rõ"
-            if direction == "entry" and plate and connection.execute("SELECT 1 FROM gate_sessions WHERE plate_number = ? AND status = 'open'", (plate,)).fetchone():
+            if direction == "entry" and plate and connection.execute(f"SELECT 1 FROM gate_sessions WHERE plate_number = ? AND status = 'open' AND {owned_session()}", (plate, *session_owner(user.username))).fetchone():
                 waiting_decision, waiting_reason = "approved", "Xe này đã được ghi nhận vào; chờ xe đi qua"
             return RecognitionResult(
                 event_id="live-preview", decision=waiting_decision, reason=waiting_reason,
@@ -438,7 +468,7 @@ async def verify_gate_image(
         if not faces:
             reason = UNCLEAR_REASON if face_unclear else "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn" if plate else "Không đọc được biển số xe và không thấy khuôn mặt rõ"
         elif plate and direction == "entry":
-            existing = connection.execute("SELECT id, entry_event_id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+            existing = connection.execute(f"SELECT id, entry_event_id FROM gate_sessions WHERE plate_number = ? AND status = 'open' AND {owned_session()} ORDER BY entered_at DESC LIMIT 1", (plate, *session_owner(user.username))).fetchone()
             if existing:
                 # Khung hình lặp của xe đã vào: không ghi thêm nhật ký, không tạo phiên mới.
                 return RecognitionResult(
@@ -447,10 +477,10 @@ async def verify_gate_image(
                 )
             decision, reason = "approved", "Đã ghi nhận xe và khuôn mặt tại thời điểm vào"
         elif plate:
-            session = connection.execute("SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
+            session = connection.execute(f"SELECT * FROM gate_sessions WHERE plate_number = ? AND status = 'open' AND {owned_session()} ORDER BY entered_at DESC LIMIT 1", (plate, *session_owner(user.username))).fetchone()
             recent_exit = None if session or not automatic else connection.execute(
-                "SELECT exit_event_id, exited_at FROM gate_sessions WHERE plate_number = ? AND status = 'closed' AND julianday(exited_at) >= julianday(?) ORDER BY exited_at DESC LIMIT 1",
-                (plate, (datetime.now(timezone.utc) - timedelta(seconds=EXIT_REPEAT_WINDOW_SECONDS)).isoformat()),
+                f"SELECT exit_event_id, exited_at FROM gate_sessions WHERE plate_number = ? AND status = 'closed' AND julianday(exited_at) >= julianday(?) AND {owned_session()} ORDER BY exited_at DESC LIMIT 1",
+                (plate, (datetime.now(timezone.utc) - timedelta(seconds=EXIT_REPEAT_WINDOW_SECONDS)).isoformat(), *session_owner(user.username)),
             ).fetchone()
             if recent_exit:
                 # Xe vừa được cho ra còn đứng trước camera: như lượt vào lặp, không ghi thêm "Từ chối".
@@ -499,18 +529,23 @@ async def verify_gate_image(
 # ---------- Thống kê và nhật ký ----------
 
 @app.get("/api/v1/dashboard/summary")
-def dashboard_summary(since: datetime | None = None, _: StaffUser = Depends(active_user)) -> dict:
+def dashboard_summary(since: datetime | None = None, user: StaffUser = Depends(active_user)) -> dict:
     """Đếm theo quyết định. ``approved`` gồm cả lượt bảo vệ duyệt; ``pending`` là lượt chờ bảo vệ."""
     if since is not None and since.utcoffset() is None:
         raise HTTPException(422, "Thời gian phải có múi giờ")
-    where, values = ("WHERE julianday(occurred_at) >= julianday(?)", [since.astimezone(timezone.utc).isoformat()]) if since else ("", [])
+    conditions, values = own_records(user)
+    if since:
+        conditions.append("julianday(occurred_at) >= julianday(?)")
+        values.append(since.astimezone(timezone.utc).isoformat())
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
     with get_connection() as connection:
         totals = connection.execute(
             f"SELECT COUNT(*) AS total, SUM(decision = 'approved') AS ai_approved, SUM(decision = 'manual_approved') AS manual_approved, "
             f"SUM(decision = 'denied') AS denied, SUM(decision = 'manual_review') AS pending "
             f"FROM access_events {where}", values,
         ).fetchone()
-        open_sessions = connection.execute("SELECT COUNT(*) FROM gate_sessions WHERE status = 'open'").fetchone()[0]
+        open_where, owner = ("", ()) if user.role == "admin" else (" AND " + owned_session(), session_owner(user.username))
+        open_sessions = connection.execute("SELECT COUNT(*) FROM gate_sessions WHERE status = 'open'" + open_where, owner).fetchone()[0]
     ai_approved, manual_approved = totals["ai_approved"] or 0, totals["manual_approved"] or 0
     return {
         "events": totals["total"] or 0,
@@ -528,14 +563,14 @@ def search_events(
     plate: str = Query("", max_length=30),
     start: datetime | None = None, end: datetime | None = None,
     limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
-    _: StaffUser = Depends(active_user),
+    user: StaffUser = Depends(active_user),
 ) -> dict:
     for value in (start, end):
         if value is not None and value.utcoffset() is None:
             raise HTTPException(422, "Thời gian phải có múi giờ")
     if start and end and start > end:
         raise HTTPException(422, "Thời gian bắt đầu phải trước thời gian kết thúc")
-    conditions, values = [], []
+    conditions, values = own_records(user)
     normalized = normalize_plate_input(plate)
     if normalized:
         conditions.append("instr(UPPER(REPLACE(REPLACE(REPLACE(COALESCE(plate_number, ''), '-', ''), '.', ''), ' ', '')), ?) > 0")
@@ -555,30 +590,36 @@ def search_events(
 
 
 @app.get("/api/v1/events")
-def list_events(limit: int = Query(20, ge=1, le=500), since: datetime | None = None, _: StaffUser = Depends(active_user)) -> list[dict]:
+def list_events(limit: int = Query(20, ge=1, le=500), since: datetime | None = None, user: StaffUser = Depends(active_user)) -> list[dict]:
     if since is not None and since.utcoffset() is None:
         raise HTTPException(422, "Thời gian phải có múi giờ")
-    where, values = ("WHERE julianday(occurred_at) >= julianday(?)", [since.astimezone(timezone.utc).isoformat()]) if since else ("", [])
+    conditions, values = own_records(user)
+    if since:
+        conditions.append("julianday(occurred_at) >= julianday(?)")
+        values.append(since.astimezone(timezone.utc).isoformat())
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
     with get_connection() as connection:
         rows = connection.execute(f"SELECT * FROM access_events {where} ORDER BY occurred_at DESC LIMIT ?", [*values, limit]).fetchall()
         return [dict(row) | {"evidence_url": evidence_url(row["evidence_path"])} for row in rows]
 
 
 @app.get("/api/v1/sessions/recent")
-def recent_gate_sessions(limit: int = Query(6, ge=1, le=20), _: StaffUser = Depends(active_user)) -> list[dict]:
+def recent_gate_sessions(limit: int = Query(6, ge=1, le=20), user: StaffUser = Depends(active_user)) -> list[dict]:
     """Dữ liệu đối chiếu trực quan giữa bằng chứng lúc vào và lúc ra."""
+    mine, owner = ("", ()) if user.role == "admin" else ("WHERE " + owned_session(), session_owner(user.username))
     with get_connection() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT gate_sessions.*, entry_event.decision AS entry_decision,
                    exit_event.decision AS exit_decision, exit_event.reason AS exit_reason
             FROM gate_sessions
             LEFT JOIN access_events AS entry_event ON entry_event.id = gate_sessions.entry_event_id
             LEFT JOIN access_events AS exit_event ON exit_event.id = gate_sessions.exit_event_id
+            {mine}
             ORDER BY COALESCE(gate_sessions.exited_at, gate_sessions.entered_at) DESC
             LIMIT ?
             """,
-            (limit,),
+            (*owner, limit),
         ).fetchall()
         return [dict(row) | {"entry_evidence_url": evidence_url(row["entry_evidence_path"]), "exit_evidence_url": evidence_url(row["exit_evidence_path"])} for row in rows]
 

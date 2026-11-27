@@ -1,0 +1,39 @@
+/* Chủ đề Đại học Kiến trúc Đà Nẵng: đỏ của logo, nền lưới bản vẽ và nét công trình.
+   Nạp sau các tệp khác. Chỉ đổi màu thương hiệu; xanh/vàng/đỏ báo kết quả ở cổng giữ nguyên ý nghĩa. */
+:root{--dau-red:#be230d;--dau-red-dark:#951b09;--dau-tint:#fbecea;--dau-line:#eccbc5}
+
+body{background:
+  linear-gradient(rgba(190,35,13,.045) 1px,transparent 1px) 0 0/32px 32px,
+  linear-gradient(90deg,rgba(190,35,13,.045) 1px,transparent 1px) 0 0/32px 32px,
+  #f7f5f4;min-height:100vh}
+
+
+.brand-logo{width:46px;height:46px;object-fit:contain;flex:0 0 auto}
+.eyebrow{color:#a63421}
+
+button{border-color:var(--dau-red);background:var(--dau-red)}
+button:hover{background:var(--dau-red-dark)}
+button:disabled:hover{background:var(--dau-red)}
+.guest-file{border-color:var(--dau-red);color:var(--dau-red)}
+.guest-file:focus-within{outline-color:var(--dau-red)}
+.guest-lane h2 span{background:var(--dau-tint);border-color:var(--dau-line);color:var(--dau-red)}
+
+main>header{border-bottom:2px solid var(--dau-red)}
+.app-nav{border-top:5px solid var(--dau-red)}
+.app-nav button:hover{background:#faf2f0}
+.app-nav button.active{background:var(--dau-tint);color:var(--dau-red-dark);border-left-color:var(--dau-red);border-bottom-color:var(--dau-red)}
+.user-chip{background:var(--dau-tint);border-color:var(--dau-line)}
+.card-icon{color:#a4574b}
+.hour-bar>span{background:var(--dau-red)}
+.camera-settings summary,.view-event-hint,.event-detail footer a{color:var(--dau-red-dark)}
+.receipt-tabs button.active{background:var(--dau-red);border-color:var(--dau-red)}
+@media(max-width:760px){.app-nav{border-top:0}.brand-logo{width:38px;height:38px}}
+/* Khung ảnh quét: bỏ sắc xanh của giao diện cũ. */
+.scan-receipt{border-color:#e4d6d3;background:#fdfbfa}
+.lane-receipt{border-color:#e6dad7}
+.lane-receipt.selected-lane{border-color:#d7a69d}
+.lane-receipt>header{background:#faf2f0;border-bottom-color:#ecdedb}
+.lane-receipt h4{color:#8a2717}
+.lane-receipt>header>span,.lane-receipts-note{color:#8b7f7c}
+.receipt-empty,.lane-receipt .receipt-empty{background:#fcf9f8;border-color:#ecdedb}
+.receipt-empty>span{color:#6e5a56}

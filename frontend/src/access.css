@@ -1,8 +1,4 @@
 /* Đăng nhập, tài khoản — cùng phong cách sáng của operations.css */
-.login-screen{min-height:100vh;display:grid;place-items:center;padding:24px;background:#f3f5f6}
-.login-card{width:min(420px,100%);background:#fff;border:1px solid #dbe1e4;border-radius:6px;padding:28px;display:flex;flex-direction:column;gap:16px}
-.login-card>p{font-size:13px}
-.login-card button{margin-top:4px}
 .header-tools{display:flex;align-items:center;gap:14px}
 .user-chip{font-size:12px;color:#35464f;background:#eef3f1;border:1px solid #d3e0da;border-radius:3px;padding:5px 9px;white-space:nowrap}
 .header-tools button{padding:6px 12px;font-size:12px}
@@ -32,3 +28,8 @@ main>.accounts-panel{display:none}
 .account-list button{padding:5px 10px;font-size:12px}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.access-grid{grid-template-columns:1fr}}
 @media(max-width:760px){.two-columns{grid-template-columns:1fr}.header-tools .user-chip{display:none}}
+.request-actions{display:flex;gap:8px;flex:0 0 auto}
+.nav-count{display:inline-block;margin-left:8px;min-width:20px;padding:0 6px;border-radius:10px;background:#b3261e;color:#fff;font-size:11px;font-weight:700;line-height:20px;text-align:center}
+.access-column{display:flex;flex-direction:column;gap:20px;min-width:0}
+.access-card.has-pending{border-color:#d9b44a;background:#fffbee}
+.view-event-operator{display:block;font-weight:600}

@@ -42,6 +42,7 @@ Giá trị trên Mac không dùng được cho máy này. IP đổi thì sửa h
 
 | Việc | Lệnh (PowerShell, trong thư mục dự án) |
 |---|---|
+| Xem lịch sử deploy | mở `deploy\LICH_SU_DEPLOY.csv` bằng Excel, hoặc `Import-Csv deploy\LICH_SU_DEPLOY.csv \| Format-Table` |
 | Xem lại link công khai | `docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml logs tunnel \| Select-String trycloudflare` |
 | Cập nhật code | `git pull` rồi chạy lại `scripts\deploy-win.ps1` |
 | Tắt link công khai (giữ hệ thống nội bộ) | `docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml rm -sf tunnel` |

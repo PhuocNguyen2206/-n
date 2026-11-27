@@ -24,3 +24,4 @@ __pycache__/
 backend/data/evidence/
 backend/data/backup-*/
 .env
+deploy/LICH_SU_DEPLOY.csv

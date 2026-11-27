@@ -21,6 +21,8 @@ services:
       - COOKIE_SECURE=1
       # Nút "Xem thử" cho khách (chỉ thử nhận diện, không lưu). Đặt GUEST_DEMO=0 trong .env để tắt.
       - GUEST_DEMO=${GUEST_DEMO:-1}
+      # Tự đăng ký tài khoản, chờ quản trị viên duyệt. Đặt ALLOW_REGISTRATION=0 trong .env để tắt.
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

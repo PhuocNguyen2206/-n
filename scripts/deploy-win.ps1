@@ -1,9 +1,28 @@
 ﻿# Bật bản chạy thật + link công khai trên máy Windows làm máy chủ (Docker Desktop).
 #   powershell -ExecutionPolicy Bypass -File scripts\deploy-win.ps1   (hướng dẫn: deploy\HUONG_DAN_WINDOWS.md)
 # Chạy lại script này sau mỗi lần cập nhật code (git pull) hoặc sau khi khởi động lại máy để lấy link mới.
+# Mỗi lần chạy ghi một dòng vào deploy\LICH_SU_DEPLOY.csv (mở được bằng Excel). Thêm ghi chú: -GhiChu "sua loi camera"
+param([string]$GhiChu = "")
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
+
+# Mã commit đang deploy; SuaChuaCommit = "co" nghĩa là code trên máy còn thay đổi chưa commit.
+$Commit = ""; $Dirty = ""
+try {
+  $Commit = "$(git log -1 --format='%h %s')"
+  $Dirty = if (git status --porcelain --untracked-files=normal) { "co" } else { "khong" }
+} catch { }
+
+function Add-DeployHistory([string]$Result, [string]$Link = "", [string]$Detail = "") {
+  [pscustomobject]@{
+    ThoiGian = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); KetQua = $Result; Commit = $Commit; SuaChuaCommit = $Dirty
+    LinkTrycloudflare = $Link; GhiChu = (@($GhiChu, $Detail) | Where-Object { $_ }) -join " | "
+  } | Export-Csv -Path (Join-Path $Root "deploy\LICH_SU_DEPLOY.csv") -Append -NoTypeInformation -Encoding UTF8
+}
+
+# Lỗi ở bất kỳ bước nào cũng được ghi lại rồi mới dừng.
+trap { Add-DeployHistory "LOI" "" $_.Exception.Message; break }
 
 docker info *> $null
 if ($LASTEXITCODE -ne 0) { throw "Docker Desktop chua chay. Mo Docker Desktop, doi bieu tuong ca voi dung yen roi chay lai." }
@@ -30,6 +49,13 @@ $Compose = @("compose", "-f", "docker-compose.prod.yml", "-f", "docker-compose.t
 & docker @Compose up -d --build
 if ($LASTEXITCODE -ne 0) { throw "docker compose that bai" }
 
+Write-Host "Dang kiem tra API..."
+$healthy = $false
+for ($i = 0; $i -lt 30 -and -not $healthy; $i++) {
+  Start-Sleep -Seconds 2
+  try { $healthy = (Invoke-RestMethod http://127.0.0.1:8080/api/v1/health -TimeoutSec 3).status -eq "ok" } catch { }
+}
+
 Write-Host "Dang lay link cong khai..."
 $link = $null
 for ($i = 0; $i -lt 30 -and -not $link; $i++) {
@@ -40,3 +66,10 @@ $ip = (Get-Content $EnvFile | Select-String "DEFAULT_SNI=(.+)").Matches.Groups[1
 Write-Host ""
 Write-Host "Trong mang noi bo : https://$ip"
 if ($link) { Write-Host "Link cong khai    : $link" } else { Write-Host "Chua lay duoc link, xem: docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml logs tunnel" }
+
+if ($healthy) { Add-DeployHistory "THANH CONG" "$link" }
+else {
+  Add-DeployHistory "LOI" "$link" "API khong tra loi sau 60 giay"
+  Write-Warning "API khong tra loi. Xem log: docker compose -f docker-compose.prod.yml logs api"
+}
+Write-Host "Lich su deploy    : deploy\LICH_SU_DEPLOY.csv"
