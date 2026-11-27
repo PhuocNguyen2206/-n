@@ -10,7 +10,7 @@ const PHOTOS: Array<{ src: string; alt: string; focus?: string; whole?: boolean 
   { src: "/truong/tot-nghiep.jpg", alt: "Sinh viên trong lễ tốt nghiệp", focus: "50% 45%" },
   { src: "/truong/ky-hoa-cong-truong.jpg", alt: "Ký họa cổng trường", whole: true },
 ];
-const SLIDE_MS = 6000;
+const SLIDE_MS = 3800; // ảnh kế tiếp bắt đầu hiện sau chừng này (thời gian mờ dần nằm trong CSS)
 
 /** Dải đầu trang màu xanh của các màn trước khi đăng nhập. */
 export function AuthHeader() {
