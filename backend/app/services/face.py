@@ -14,6 +14,7 @@ from PIL import Image, UnidentifiedImageError
 class FaceData:
     embedding: list[float]
     confidence: float
+    box: tuple[float, ...] = ()  # trái, trên, phải, dưới trong ảnh gốc
 
 
 class FaceService:
@@ -56,7 +57,7 @@ class FaceService:
             with torch.inference_mode():
                 vector = self.encoder(face.to(self.device))[0]
             vector = torch.nn.functional.normalize(vector, p=2, dim=0).cpu().numpy()
-            results.append(FaceData(vector.astype(float).tolist(), round(float(probability), 3)))
+            results.append(FaceData(vector.astype(float).tolist(), round(float(probability), 4), tuple(float(value) for value in boxes[index])))
         if not results:
             raise ValueError("Không thể trích xuất khuôn mặt")
         return results

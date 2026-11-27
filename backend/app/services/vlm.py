@@ -13,12 +13,14 @@ HTTP. Khi Ollama chưa cài, đang tắt hoặc thiếu model, mọi hàm ở đ
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass
+from io import BytesIO
 
 import cv2
 import httpx
@@ -34,6 +36,15 @@ PROMPT = (
     "If it has two lines, read the top line then the bottom line. "
     "Reply with only the plate characters (letters and digits), no explanation."
 )
+
+
+FACE_PROMPT = (
+    "Look at the main face in this photo. Is any part of the face (left eye, right eye, nose, mouth) "
+    "covered or hidden by a hand, phone, mask, helmet visor or other object, or cut off? "
+    'Clear eyeglasses do not count. Reply with JSON: {"left_eye": bool, "right_eye": bool, "nose": bool, "mouth": bool} '
+    "where true means clearly visible."
+)
+FACE_PARTS = ("left_eye", "right_eye", "nose", "mouth")
 
 
 def is_valid_vn_plate(text: str | None) -> bool:
@@ -115,14 +126,15 @@ class VlmPlateReader:
     def is_available(self) -> bool:
         return bool(self.status().get("available"))
 
-    def _generate(self, image_b64: str) -> str:
+    def _generate(self, image_b64: str, prompt: str = PROMPT, num_predict: int = 24, **extra) -> str:
         payload = {
             "model": self.model,
-            "prompt": PROMPT,
+            "prompt": prompt,
             "images": [image_b64],
             "stream": False,
             "keep_alive": os.getenv("VLM_KEEP_ALIVE", "30m"),
-            "options": {"temperature": 0, "num_predict": 24},
+            "options": {"temperature": 0, "num_predict": num_predict},
+            **extra,
         }
         response = self._client.post(f"{self.host}/api/generate", json=payload, timeout=self.timeout)
         response.raise_for_status()
@@ -171,6 +183,27 @@ class VlmPlateReader:
             logger.warning("VLM không đọc được biển số: %s", error)
             with self._status_lock:
                 self._status = None  # kiểm tra lại kết nối ở lần sau
+            return None
+        finally:
+            self._busy.release()
+
+    # ---------- kiểm tra khuôn mặt ----------
+    def check_face(self, face) -> bool | None:
+        """Mắt, mũi, miệng trong ảnh (PIL) có lộ rõ cả không. ``None`` nếu VLM không trả lời được."""
+        if not self.is_available() or not self._busy.acquire(timeout=10):
+            return None
+        try:
+            buffer = BytesIO()
+            face.save(buffer, format="PNG")
+            raw_text = self._generate(base64.b64encode(buffer.getvalue()).decode("ascii"), FACE_PROMPT, 80, format="json")
+            answer = json.loads(raw_text)
+            if not isinstance(answer, dict) or not all(isinstance(answer.get(part), bool) for part in FACE_PARTS):
+                raise ValueError(f"trả lời không đúng mẫu: {raw_text[:60]!r}")
+            return all(answer[part] for part in FACE_PARTS)
+        except (httpx.HTTPError, ValueError) as error:
+            logger.warning("VLM không kiểm tra được khuôn mặt: %s", error)
+            if is_degenerate_output(str(error)):
+                self.reset_runner()
             return None
         finally:
             self._busy.release()

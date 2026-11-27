@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { API, apiFetch, errorMessage } from "./api";
 
 export type StaffUser = { username: string; full_name: string; role: "admin" | "guard"; must_change_password: boolean };
-export function LoginScreen({ onLogin }: { onLogin: (user: StaffUser) => void }) {
+export function LoginScreen({ onLogin, onGuest }: { onLogin: (user: StaffUser) => void; onGuest?: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,6 +25,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: StaffUser) => void })
     <label>Mật khẩu<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required maxLength={200} /></label>
     {message && <p className="form-message error" role="alert">{message}</p>}
     <button type="submit" disabled={busy || !username.trim() || !password}>{busy ? "Đang đăng nhập…" : "Đăng nhập"}</button>
+    {onGuest && <div className="guest-entry"><p>Chưa có tài khoản? Thử nhận diện biển số và khuôn mặt, không cần đăng ký.</p><button type="button" className="secondary" onClick={onGuest}>Xem thử</button></div>}
   </form></div>;
 }
 

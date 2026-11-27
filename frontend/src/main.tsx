@@ -4,7 +4,8 @@ import "./operations.css";
 import "./access.css";
 import "./gate-screen.css";
 import { AccountsPanel, ChangePasswordForm, LoginScreen, type StaffUser } from "./access";
-import { API, BACKEND, UNAUTHORIZED_EVENT, apiFetch } from "./api";
+import { API, BACKEND, UNAUTHORIZED_EVENT, apiFetch, formatPlate } from "./api";
+import { GuestScreen } from "./guest";
 
 type Event = { id: string; occurred_at: string; direction: string; plate_number: string | null; decision: string; reason: string; evidence_url?: string | null; plate_source?: "ocr" | "vlm" | null };
 const vlmBadgeStyle = {marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: "0.72em", fontWeight: 600, background: "#e8f0fe", color: "#174ea6", verticalAlign: "middle"};
@@ -15,16 +16,34 @@ type GateBanner = { tone: BannerTone; title: string; plate?: string | null; deta
 // Kết quả thật (cho phép / từ chối / chờ bảo vệ) được giữ trên dải màu ít nhất chừng này,
 // để khung hình "đang chờ" kế tiếp không xóa mất trước khi bảo vệ kịp nhìn.
 const BANNER_HOLD_MS = 8000;
-const RESUME_AFTER_REVIEW_MS = 5000;
+// Nhịp quét cổng. Mỗi xe cần hai khung đọc cùng một biển nên nhịp ngắn để không phải chờ lâu.
+const SCAN_INTERVAL_MS = 1500;
+// Xử lý xong một xe, làn khóa đến khi biển xe đó vắng mặt từng này khung liên tiếp.
+const LANE_CLEAR_FRAMES = 2;
+/** Hai lần đọc lệch nhau tối đa 2 ký tự vẫn coi là cùng một biển (xe đang chạy, OCR dễ sai một ký tự). */
+const samePlate = (a: string, b: string) => {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(next[j - 1] + 1, row[j] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length] <= 2;
+};
+const MANUAL_PLATE_KEEP_MS = 10000;
 const STORAGE = { direction: "gate.direction", faceCamera: "gate.faceCamera", plateCamera: "gate.plateCamera" };
 const readSaved = (key: string) => { try { return localStorage.getItem(key) || ""; } catch { return ""; } };
-const formatPlate = (plate: string) => plate.replace(/^(\d{2}[A-Z][A-Z0-9]?)(\d{3})(\d{2})$/, "$1-$2.$3").replace(/^(\d{2}[A-Z][A-Z0-9]?)(\d{4})$/, "$1-$2");
 type Summary = { events: number; approved: number; ai_approved: number; manual_approved: number; denied: number; pending: number; open_sessions: number };
 type View = "overview" | "monitor" | "analysis" | "history" | "accounts";
 type CameraDevice = { deviceId: string; label: string };
 
 function Root() {
   const [user, setUser] = useState<StaffUser | null | undefined>(undefined);
+  const [guest, setGuest] = useState(false);
+  const [guestAllowed, setGuestAllowed] = useState(false);
+  useEffect(() => {
+    fetch(`${API}/demo/status`).then(response => response.ok ? response.json() : null).then(data => setGuestAllowed(!!data?.enabled)).catch(() => undefined);
+  }, []);
   useEffect(() => {
     fetch(`${API}/auth/me`, {credentials: "include"}).then(response => response.ok ? response.json() : null).then(setUser).catch(() => setUser(null));
     const expired = () => setUser(null);
@@ -32,7 +51,8 @@ function Root() {
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, expired);
   }, []);
   if (user === undefined) return <div className="login-screen"><p>Đang kiểm tra phiên đăng nhập…</p></div>;
-  if (!user) return <LoginScreen onLogin={setUser} />;
+  if (!user && guest) return <GuestScreen onBack={() => setGuest(false)} />;
+  if (!user) return <LoginScreen onLogin={setUser} onGuest={guestAllowed ? () => setGuest(true) : undefined} />;
   if (user.must_change_password) return <div className="login-screen"><div className="login-card"><div className="brand"><div className="brand-mark">BV</div><div><p className="eyebrow">QUẢN LÝ PHƯƠNG TIỆN</p><h1>Đổi mật khẩu lần đầu</h1></div></div><p>Tài khoản <b>{user.username}</b> đang dùng mật khẩu được cấp. Hãy đặt mật khẩu riêng (ít nhất 8 ký tự) trước khi vào trạm bảo vệ.</p><ChangePasswordForm onDone={setUser} /></div></div>;
   const logout = async () => { await fetch(`${API}/auth/logout`, {method: "POST", credentials: "include"}).catch(() => undefined); setUser(null); };
   return <App user={user} onLogout={logout} />;
@@ -64,6 +84,17 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
   const plateStreamRef = useRef<MediaStream | null>(null);
   const scanningRef = useRef(false);
   const reviewRef = useRef<ExitReview | null>(null);
+  // Bảo vệ cho vào: chỉ hiện khi hệ thống đã đọc được biển số nhưng khuôn mặt chưa nhận diện rõ.
+  const [manualPlate, setManualPlate] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualMessage, setManualMessage] = useState("");
+  const plateSeenAtRef = useRef(0);
+  const suggestPlate = (plate: string | null | undefined) => {
+    if (plate) { plateSeenAtRef.current = Date.now(); setManualPlate(plate); }
+    // Quá lâu không thấy biển: ẩn nút để không duyệt nhầm xe trước.
+    else if (Date.now() - plateSeenAtRef.current > MANUAL_PLATE_KEEP_MS) clearManualPlate();
+  };
+  const clearManualPlate = () => { plateSeenAtRef.current = 0; setManualPlate(""); setManualMessage(""); };
   const [pendingReview, setPendingReview] = useState<ExitReview | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewMessage, setReviewMessage] = useState("");
@@ -83,7 +114,6 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
   const [captureDetails, setCaptureDetails] = useState({ entry: "", exit: "" });
   const [banner, setBanner] = useState<GateBanner>({ tone: "info", title: "", detail: "Sẵn sàng kết nối camera tại làn xe" });
   const decisionAtRef = useRef(0);
-  const resumeTimerRef = useRef<number | null>(null);
   const autoStartTriedRef = useRef(false);
   const setLiveResult = (detail: string) => setBanner({ tone: "info", title: "", detail });
   const showDecision = (tone: BannerTone, title: string, plate: string | null | undefined, detail: string) => {
@@ -195,15 +225,38 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
     canvas.toBlob(blob => blob ? resolve(new File([blob], name, { type: "image/jpeg" })) : reject(new Error("Không thể lấy khung hình")), "image/jpeg", 0.88);
   });
 
+  // Khóa làn: giữ biển xe vừa xử lý cho đến khi nó rời khung, để xe sau không bị ghép vào xe trước.
+  const laneLockRef = useRef<{ plate: string; misses: number } | null>(null);
+  const lastPlateRef = useRef("");
+  const lockLane = (plate: string | null | undefined) => { laneLockRef.current = plate ? { plate, misses: 0 } : null; lastPlateRef.current = ""; };
+
+  const watchLane = async (plateFrame: File) => {
+    const lock = laneLockRef.current!;
+    const form = new FormData(); form.append("image", plateFrame);
+    const response = await apiFetch(`${API}/vision/analyze`, { method: "POST", body: form });
+    if (!response.ok || laneLockRef.current !== lock) return;
+    const { plate_text: seen } = await response.json();
+    if (seen && samePlate(seen, lock.plate)) {
+      lock.misses = 0;
+      if (Date.now() - decisionAtRef.current > BANNER_HOLD_MS) setBanner({ tone: "info", title: "CHỜ XE ĐI QUA", plate: lock.plate, detail: "Xe vừa xử lý còn trong khung. Xe sau được quét khi xe này đi khỏi." });
+      return;
+    }
+    if (++lock.misses < LANE_CLEAR_FRAMES) return;
+    lockLane(null); setBarrierState("held"); clearManualPlate(); decisionAtRef.current = 0;
+    setBanner({ tone: "scan", title: "XE ĐÃ QUA", plate: lock.plate, detail: "Thanh chắn đã hạ. Đang chờ xe tiếp theo." });
+  };
+
   const scanLiveFrame = async () => {
     if (reviewRef.current || scanningRef.current || !faceVideoRef.current || !plateVideoRef.current) return;
     scanningRef.current = true;
     const direction = directionRef.current;
     try {
       const [faceFrame, plateFrame] = await Promise.all([frameFromVideo(faceVideoRef.current, "face-camera.jpg"), frameFromVideo(plateVideoRef.current, "plate-camera.jpg")]);
+      if (laneLockRef.current) { await watchLane(plateFrame); return; }
       const form = new FormData();
       form.append("images", faceFrame); form.append("images", plateFrame);
       form.append("direction", direction); form.append("automatic", "true"); form.append("paired_cameras", "true");
+      form.append("previous_plate", lastPlateRef.current);
       const response = await apiFetch(`${API}/gate/verify`, { method: "POST", body: form });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Không thể quét camera");
@@ -213,6 +266,17 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
         scanTimerRef.current = null; setLiveScanning(false);
       }
       const preview = result.event_id === "live-preview";
+      lastPlateRef.current = result.plate_number || "";
+      if (result.stage) {
+        if (result.stage === "crowded") { clearManualPlate(); decisionAtRef.current = 0; }
+        if (Date.now() - decisionAtRef.current > BANNER_HOLD_MS) setBanner({ tone: result.stage === "crowded" ? "wait" : "scan", title: result.stage === "crowded" ? "MỜI TỪNG XE" : "ĐANG QUÉT", plate: result.plate_number, detail: result.reason });
+        return;
+      }
+      if (!preview && result.decision === "approved") lockLane(result.plate_number);
+      if (direction === "entry") {
+        if (result.decision === "approved") clearManualPlate();
+        else suggestPlate(result.plate_number);
+      }
       if (!preview) setBarrierState(result.decision === "approved" ? "auto_open" : "held");
       if (result.decision === "approved" && result.evidence_url) {
         const url = `${BACKEND}${result.evidence_url}`;
@@ -253,18 +317,36 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
       reviewRef.current = null; setPendingReview(null);
       const resuming = !!plateStreamRef.current;
       showDecision(action === "approve" ? "allow" : "block", action === "approve" ? "BẢO VỆ CHO RA" : "BẢO VỆ KHÔNG CHO RA", result.plate_number,
-        resuming ? `Đã lưu nhật ký · Tự quét tiếp sau ${RESUME_AFTER_REVIEW_MS / 1000} giây` : "Đã lưu nhật ký");
-      // Không bắt bảo vệ bấm "tiếp tục quét": camera còn bật thì tự quét lại sau vài giây.
+        !resuming ? "Đã lưu nhật ký" : action === "approve" ? "Đã lưu nhật ký · Thanh chắn hạ khi xe đi qua" : "Đã lưu nhật ký · Quét tiếp khi xe rời khung");
+      // Không bắt bảo vệ bấm "tiếp tục quét": camera còn bật thì quét lại ngay, làn khóa đến khi xe này đi khỏi.
       if (resuming) {
-        if (resumeTimerRef.current) window.clearTimeout(resumeTimerRef.current);
-        resumeTimerRef.current = window.setTimeout(() => {
-          resumeTimerRef.current = null;
-          if (!reviewRef.current && plateStreamRef.current && !scanTimerRef.current) startGateScan();
-        }, RESUME_AFTER_REVIEW_MS);
+        lockLane(result.plate_number);
+        if (!scanTimerRef.current) startGateScan();
       }
       await load();
     } catch (error) { setReviewMessage(error instanceof Error ? error.message : "Không lưu được xác nhận. Thanh chắn mô phỏng vẫn giữ."); }
     finally { setReviewBusy(false); }
+  };
+
+  const approveEntry = async () => {
+    if (manualBusy || !faceVideoRef.current || !plateVideoRef.current) return;
+    setManualBusy(true); setManualMessage("");
+    try {
+      const [faceFrame, plateFrame] = await Promise.all([frameFromVideo(faceVideoRef.current, "face-camera.jpg"), frameFromVideo(plateVideoRef.current, "plate-camera.jpg")]);
+      const form = new FormData();
+      form.append("images", faceFrame); form.append("images", plateFrame); form.append("expected_plate", manualPlate);
+      const response = await apiFetch(`${API}/gate/entry/manual-approve`, { method: "POST", body: form });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Không lưu được xác nhận. Thanh chắn mô phỏng vẫn giữ.");
+      setBarrierState("manual_open");
+      lockLane(result.plate_number);
+      setEntrySnapshot(`${BACKEND}${result.evidence_url}`);
+      setCaptureDetails(previous => ({ ...previous, entry: `${result.plate_number} · Bảo vệ xác nhận · ${new Date(result.captured_at).toLocaleString("vi-VN")}` }));
+      showDecision("allow", "CHO VÀO", result.plate_number, "Bảo vệ xác nhận cho xe vào");
+      clearManualPlate();
+      await load();
+    } catch (error) { setManualMessage(error instanceof Error ? error.message : "Không lưu được xác nhận."); }
+    finally { setManualBusy(false); }
   };
 
   const drawFaceBoxes = (video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null, result: { width: number; height: number; faces: Array<{ box: number[]; confidence: number }> }) => {
@@ -339,16 +421,15 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
   const stopLiveCamera = () => {
     pauseScanning();
     [...(faceStreamRef.current?.getTracks() || []), ...(plateStreamRef.current?.getTracks() || [])].forEach(track => track.stop());
-    faceStreamRef.current = null; plateStreamRef.current = null; setLiveCameraOn(false); setLiveResult("Đã dừng camera tại làn xe.");
+    faceStreamRef.current = null; plateStreamRef.current = null; setLiveCameraOn(false); clearManualPlate(); lockLane(null); setBarrierState("held"); setLiveResult("Đã dừng camera tại làn xe.");
   };
 
-  const startGateScan = () => { scanLiveFrame(); scanTimerRef.current = window.setInterval(scanLiveFrame, 3000); setLiveScanning(true); };
+  const startGateScan = () => { scanLiveFrame(); scanTimerRef.current = window.setInterval(scanLiveFrame, SCAN_INTERVAL_MS); setLiveScanning(true); };
   const startFaceScan = () => { scanFaceOnly(); faceTimerRef.current = window.setInterval(scanFaceOnly, 900); setFaceScanning(true); };
   const pauseScanning = () => {
     if (scanTimerRef.current) window.clearInterval(scanTimerRef.current);
     if (faceTimerRef.current) window.clearInterval(faceTimerRef.current);
-    if (resumeTimerRef.current) window.clearTimeout(resumeTimerRef.current);
-    scanTimerRef.current = null; faceTimerRef.current = null; resumeTimerRef.current = null;
+    scanTimerRef.current = null; faceTimerRef.current = null;
     setLiveScanning(false); setFaceScanning(false);
   };
   // Một nút cho cả quét mặt và quét cổng.
@@ -373,7 +454,7 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
   useEffect(() => () => stopLiveCamera(), []);
 
   const displayedEvents = activeView === "history" ? historyData.items : events.slice(0, 6);
-  const decisionLabel = (decision: string) => ({approved: "Cho phép (AI)", manual_approved: "Bảo vệ cho ra", manual_review: "Chờ bảo vệ", denied: "Từ chối"}[decision] || decision);
+  const decisionLabel = (decision: string, direction?: string) => ({approved: "Cho phép (AI)", manual_approved: direction === "entry" ? "Bảo vệ cho vào" : "Bảo vệ cho ra", manual_review: "Chờ bảo vệ", denied: "Từ chối"}[decision] || decision);
   const hourlyTraffic = Array.from({ length: 24 }, (_, hour) => todayEvents.filter(event => new Date(event.occurred_at).getHours() === hour).length);
   const trafficPeak = Math.max(...hourlyTraffic, 0);
   const latestComparison = sessions.find(session => session.exited_at) || sessions[0];
@@ -394,7 +475,7 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
       <div className={`gate-banner ${banner.tone}`} role="status" aria-live="polite">
         <div className="gate-banner-text"><small>{direction === "entry" ? "LỐI VÀO" : "LỐI RA"} · KẾT QUẢ HIỆN TẠI</small>{banner.title && <strong>{banner.title}</strong>}<p>{banner.detail}</p></div>
         {banner.plate && <b className="gate-plate" aria-label={`Biển số ${banner.plate}`}>{formatPlate(banner.plate)}</b>}
-        <div className={`barrier-chip ${barrierState === "held" ? "held" : "opened"}`} title="Thanh chắn mô phỏng: chỉ hiển thị trên web, không kết nối thiết bị IoT"><span className="simulated-arm" aria-hidden="true" /><span><small>THANH CHẮN · MÔ PHỎNG</small>{barrierState === "held" ? "ĐANG GIỮ" : barrierState === "manual_open" ? "MỞ — BẢO VỆ XÁC NHẬN" : "MỞ — AI CHO PHÉP"}</span>{barrierState !== "held" && <button type="button" className="secondary" onClick={() => setBarrierState("held")}>Đóng</button>}</div>
+        <div className={`barrier-chip ${barrierState === "held" ? "held" : "opened"}`} title="Thanh chắn mô phỏng: chỉ hiển thị trên web, không kết nối thiết bị IoT"><span className="simulated-arm" aria-hidden="true" /><span><small>THANH CHẮN · MÔ PHỎNG</small>{barrierState === "held" ? "ĐANG GIỮ" : barrierState === "manual_open" ? "MỞ — BẢO VỆ XÁC NHẬN" : "MỞ — AI CHO PHÉP"}</span></div>
       </div>
       <div className="scan-workspace"><div className="camera-preview">
       <div className="gate-lanes">
@@ -404,6 +485,11 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
       <p className="face-feedback">{faceResult}</p></div>
       <aside className={`scan-receipt ${pendingReview ? "has-review" : ""}`} aria-label="Ảnh quét đã lưu">
         {pendingReview && <section className="exit-review" aria-label="Bảo vệ xác nhận xe ra"><h3>Cần bảo vệ kiểm tra · {formatPlate(pendingReview.plate_number)}</h3><p>{pendingReview.reason}</p><div className="review-evidence">{([{label: "Lúc vào", url: pendingReview.entry_evidence_url}, {label: "Lúc quét ra", url: pendingReview.evidence_url}]).map(item => <div key={item.label}><b>{item.label}</b>{item.url ? <a href={`${BACKEND}${item.url}`} target="_blank" rel="noreferrer"><img src={`${BACKEND}${item.url}`} alt={`Ảnh mặt và biển số ${item.label}`} /></a> : <p>Không có ảnh</p>}</div>)}</div><small>Vào: {new Date(pendingReview.entered_at).toLocaleString("vi-VN")} · Quét ra: {new Date(pendingReview.captured_at).toLocaleString("vi-VN")}{typeof pendingReview.face_similarity === "number" ? ` · Độ giống khuôn mặt ${pendingReview.face_similarity.toFixed(2)} (cần ≥ 0,45)` : ""}</small><div className="review-buttons"><button type="button" className="approve" disabled={reviewBusy} onClick={() => resolveReview("approve")}>{reviewBusy ? "Đang lưu…" : "✓ Cho xe ra"}</button><button type="button" className="reject" disabled={reviewBusy} onClick={() => resolveReview("reject")}>✕ Không cho xe ra</button></div>{reviewMessage && <p role="alert">{reviewMessage}</p>}<small>Quét cổng tạm dừng trong lúc chờ. Xử lý xong, hệ thống tự quét tiếp.</small></section>}
+        {direction === "entry" && liveCameraOn && !pendingReview && manualPlate && <section className="manual-entry" aria-label="Bảo vệ cho xe vào">
+          <h3>Khuôn mặt chưa rõ · {formatPlate(manualPlate)}</h3><p>Kiểm tra trực tiếp người lái rồi đồng ý cho vào. Lúc ra, bảo vệ đối chiếu lại.</p>
+          <button type="button" disabled={manualBusy} onClick={approveEntry}>{manualBusy ? "Đang lưu…" : "✓ Đồng ý cho vào"}</button>
+          {manualMessage && <p className="form-message error" role="alert">{manualMessage}</p>}
+        </section>}
         <div className="receipt-heading"><div><p className="eyebrow">ẢNH QUÉT ĐÃ LƯU</p><h3>Ảnh quét {direction === "entry" ? "lối vào" : "lối ra"}</h3></div></div>
         <div className="lane-receipts single-lane">{[direction].map(lane => {
           const photo = lane === "entry" ? entrySnapshot : exitSnapshot;
@@ -417,11 +503,11 @@ function App({ user, onLogout }: { user: StaffUser; onLogout: () => void }) {
     <section className="showcase-grid"><article className="traffic-panel"><div><p className="eyebrow">LƯU LƯỢNG HÔM NAY</p><h2>Biểu đồ lượt xe theo giờ</h2></div><div className="traffic-chart">{hourlyTraffic.map((count, hour) => <div className="hour-bar" key={hour} title={`${hour}:00 — ${count} lượt`}><span style={{ height: `${count / (trafficPeak || 1) * 100}%` }} /><small>{hour % 3 === 0 ? `${hour}h` : ""}</small></div>)}</div><p className="traffic-caption">Đỉnh lưu lượng: <b>{trafficPeak} lượt/giờ</b> · Tổng hôm nay: <b>{todayEvents.length} lượt</b></p></article></section><section className="comparison-panel"><div className="comparison-head"><div><p className="eyebrow">ĐỐI CHIẾU BẰNG CHỨNG</p><h2>So sánh lượt xe vào và ra</h2></div>{latestComparison && <span className={latestComparison.exited_at ? "comparison-badge done" : "comparison-badge"}>{latestComparison.exited_at ? "ĐÃ ĐỐI CHIẾU" : "ĐANG Ở TRONG BÃI"}</span>}</div>{latestComparison ? <div className="comparison-content"><div className="proof-card"><b>01 · LÚC VÀO</b>{latestComparison.entry_evidence_url ? <img src={`${BACKEND}${latestComparison.entry_evidence_url}`} alt="Ảnh lúc xe vào" /> : <span>Chưa có ảnh bằng chứng</span>}<small>{new Date(latestComparison.entered_at).toLocaleString("vi-VN")}</small></div><div className="comparison-result"><strong>{latestComparison.plate_number}</strong><span>{latestComparison.exited_at ? (latestComparison.exit_decision === "manual_approved" ? "Bảo vệ đã kiểm tra và xác nhận cho xe ra" : "AI đã đối chiếu lượt vào và ra") : "Đang chờ lượt xe ra để xác minh"}</span><b className={latestComparison.exit_decision === "approved" ? "match" : "waiting"}>{latestComparison.exit_decision === "manual_approved" ? "✓ BẢO VỆ XÁC NHẬN" : latestComparison.exit_decision === "approved" ? "✓ KHUÔN MẶT KHỚP" : "… CHỜ ĐỐI CHIẾU"}</b></div><div className="proof-card"><b>02 · LÚC RA</b>{latestComparison.exit_evidence_url ? <img src={`${BACKEND}${latestComparison.exit_evidence_url}`} alt="Ảnh lúc xe ra" /> : <span>Chưa có ảnh bằng chứng</span>}<small>{latestComparison.exited_at ? new Date(latestComparison.exited_at).toLocaleString("vi-VN") : "Chưa có thời gian ra"}</small></div></div> : <div className="comparison-empty">Chưa có lượt xe hoàn chỉnh để đối chiếu. Khi AI ghi nhận xe vào và ra cùng biển số, ảnh bằng chứng sẽ hiện ở đây.</div>}</section><section className="history-panel">
       <div className="history-head"><div><p className="eyebrow">LỊCH SỬ HỆ THỐNG</p><h2>Nhật ký kiểm soát</h2><p>Bấm vào một lượt để xem đúng ảnh và chi tiết lúc quét.</p></div><div className="history-total"><strong>{activeView === "history" ? historyData.total : events.length}</strong><span>{activeView === "history" ? "lượt phù hợp" : "lượt gần đây"}</span></div></div>
       <div className="history-filter"><label>Tìm biển số<input value={historyPlate} onChange={e => { setHistoryPlate(e.target.value); setHistoryPage(0); }} placeholder="Ví dụ: 43A123456" maxLength={30} /></label><label>Từ thời gian<input type="datetime-local" value={historyStart} onChange={e => { setHistoryStart(e.target.value); setHistoryPage(0); }} /></label><label>Đến thời gian<input type="datetime-local" value={historyEnd} onChange={e => { setHistoryEnd(e.target.value); setHistoryPage(0); }} /></label><button type="button" onClick={() => { setHistoryPlate(""); setHistoryStart(""); setHistoryEnd(""); setHistoryPage(0); }}>Xóa lọc</button><button type="button" onClick={() => setHistoryRefresh(value => value + 1)}>Tải lại</button></div>
-      {activeView === "history" && historyBusy ? <p className="history-empty" role="status">Đang tải lịch sử…</p> : activeView === "history" && historyError ? <p className="history-empty" role="alert">{historyError}</p> : displayedEvents.length === 0 ? <div className="history-empty"><b>Chưa có lượt phù hợp</b><span>Thử tìm biển số khác hoặc thay đổi khoảng thời gian.</span></div> : <div className="history-table"><div className="history-columns"><span>Thời gian</span><span>Làn xe</span><span>Biển số</span><span>Kết quả</span><span>Ảnh & ghi chú</span></div>{displayedEvents.map(event => <button type="button" className="history-row event-detail-button" key={event.id} onClick={() => setSelectedEvent(event)} aria-label={`Xem lượt ${event.plate_number || "không biển số"} ${event.direction === "entry" ? "vào" : "ra"} lúc ${new Date(event.occurred_at).toLocaleString("vi-VN")}`}><time>{new Date(event.occurred_at).toLocaleString("vi-VN")}</time><span className={`direction ${event.direction}`}>{event.direction === "entry" ? "↘ Vào" : "↗ Ra"}</span><b>{event.plate_number || "Không có biển số"}{event.plate_source === "vlm" && <small style={vlmBadgeStyle} title="Biển số được VLM Qwen2.5-VL đọc lại vì OCR không chắc chắn">VLM</small>}</b><span className={`history-status ${event.decision}`}>{decisionLabel(event.decision)}</span><span className="history-note">{event.evidence_url ? <img src={`${BACKEND}${event.evidence_url}`} alt="Ảnh của lượt này" loading="lazy" /> : <small>Không có ảnh</small>}<span>{event.reason}<small className="view-event-hint">Xem chi tiết ↗</small></span></span></button>)}</div>}
+      {activeView === "history" && historyBusy ? <p className="history-empty" role="status">Đang tải lịch sử…</p> : activeView === "history" && historyError ? <p className="history-empty" role="alert">{historyError}</p> : displayedEvents.length === 0 ? <div className="history-empty"><b>Chưa có lượt phù hợp</b><span>Thử tìm biển số khác hoặc thay đổi khoảng thời gian.</span></div> : <div className="history-table"><div className="history-columns"><span>Thời gian</span><span>Làn xe</span><span>Biển số</span><span>Kết quả</span><span>Ảnh & ghi chú</span></div>{displayedEvents.map(event => <button type="button" className="history-row event-detail-button" key={event.id} onClick={() => setSelectedEvent(event)} aria-label={`Xem lượt ${event.plate_number || "không biển số"} ${event.direction === "entry" ? "vào" : "ra"} lúc ${new Date(event.occurred_at).toLocaleString("vi-VN")}`}><time>{new Date(event.occurred_at).toLocaleString("vi-VN")}</time><span className={`direction ${event.direction}`}>{event.direction === "entry" ? "↘ Vào" : "↗ Ra"}</span><b>{event.plate_number || "Không có biển số"}{event.plate_source === "vlm" && <small style={vlmBadgeStyle} title="Biển số được VLM Qwen2.5-VL đọc lại vì OCR không chắc chắn">VLM</small>}</b><span className={`history-status ${event.decision}`}>{decisionLabel(event.decision, event.direction)}</span><span className="history-note">{event.evidence_url ? <img src={`${BACKEND}${event.evidence_url}`} alt="Ảnh của lượt này" loading="lazy" /> : <small>Không có ảnh</small>}<span>{event.reason}<small className="view-event-hint">Xem chi tiết ↗</small></span></span></button>)}</div>}
       {activeView === "history" ? <div className="history-pagination"><span>{historyData.total ? `${historyPage * 20 + 1}–${Math.min((historyPage + 1) * 20, historyData.total)} / ${historyData.total} lượt` : "0 lượt"}</span><button type="button" className="secondary" disabled={historyBusy || historyPage === 0} onClick={() => setHistoryPage(page => page - 1)}>Trang trước</button><button type="button" className="secondary" disabled={historyBusy || (historyPage + 1) * 20 >= historyData.total} onClick={() => setHistoryPage(page => page + 1)}>Trang sau</button></div> : <button type="button" className="secondary all-history-button" onClick={() => setActiveView("history")}>Tra cứu toàn bộ nhật ký →</button>}
     </section>
     <AccountsPanel user={user} />
-    {selectedEvent && <dialog ref={evidenceDialog} className="evidence-dialog" aria-labelledby="event-detail-title" onCancel={() => setSelectedEvent(null)} onClick={e => { if (e.target === e.currentTarget) setSelectedEvent(null); }}><div className="event-detail"><header><div><p className="eyebrow">CHI TIẾT LƯỢT QUÉT</p><h2 id="event-detail-title">{selectedEvent.plate_number || "Không có biển số"} · {selectedEvent.direction === "entry" ? "Lối vào" : "Lối ra"}</h2>{selectedEvent.plate_source && <small>Biển số đọc bằng: {selectedEvent.plate_source === "vlm" ? "VLM Qwen2.5-VL (OCR không chắc chắn)" : "YOLOv8 + chars_best"}</small>}</div><button type="button" className="secondary" autoFocus onClick={() => setSelectedEvent(null)}>Đóng ✕</button></header><p className="event-time">{new Date(selectedEvent.occurred_at).toLocaleString("vi-VN")} · <b>{decisionLabel(selectedEvent.decision)}</b></p>{selectedEvent.evidence_url && !photoError ? <img className="event-evidence-photo" src={`${BACKEND}${selectedEvent.evidence_url}`} alt={`Ảnh bằng chứng của lượt ${selectedEvent.id}`} onError={() => setPhotoError(true)} /> : <div className="event-no-photo">{photoError ? "Không tải được ảnh bằng chứng. Tệp có thể đã bị di chuyển hoặc xóa." : "Lượt này không có ảnh bằng chứng được lưu."}</div>}<p className="event-reason">{selectedEvent.reason}</p><footer><small>Mã lượt: {selectedEvent.id}</small>{selectedEvent.evidence_url && !photoError && <a href={`${BACKEND}${selectedEvent.evidence_url}`} target="_blank" rel="noreferrer">Mở ảnh gốc ↗</a>}</footer></div></dialog>}
+    {selectedEvent && <dialog ref={evidenceDialog} className="evidence-dialog" aria-labelledby="event-detail-title" onCancel={() => setSelectedEvent(null)} onClick={e => { if (e.target === e.currentTarget) setSelectedEvent(null); }}><div className="event-detail"><header><div><p className="eyebrow">CHI TIẾT LƯỢT QUÉT</p><h2 id="event-detail-title">{selectedEvent.plate_number || "Không có biển số"} · {selectedEvent.direction === "entry" ? "Lối vào" : "Lối ra"}</h2>{selectedEvent.plate_source && <small>Biển số đọc bằng: {selectedEvent.plate_source === "vlm" ? "VLM Qwen2.5-VL (OCR không chắc chắn)" : "YOLOv8 + chars_best"}</small>}</div><button type="button" className="secondary" autoFocus onClick={() => setSelectedEvent(null)}>Đóng ✕</button></header><p className="event-time">{new Date(selectedEvent.occurred_at).toLocaleString("vi-VN")} · <b>{decisionLabel(selectedEvent.decision, selectedEvent.direction)}</b></p>{selectedEvent.evidence_url && !photoError ? <img className="event-evidence-photo" src={`${BACKEND}${selectedEvent.evidence_url}`} alt={`Ảnh bằng chứng của lượt ${selectedEvent.id}`} onError={() => setPhotoError(true)} /> : <div className="event-no-photo">{photoError ? "Không tải được ảnh bằng chứng. Tệp có thể đã bị di chuyển hoặc xóa." : "Lượt này không có ảnh bằng chứng được lưu."}</div>}<p className="event-reason">{selectedEvent.reason}</p><footer><small>Mã lượt: {selectedEvent.id}</small>{selectedEvent.evidence_url && !photoError && <a href={`${BACKEND}${selectedEvent.evidence_url}`} target="_blank" rel="noreferrer">Mở ảnh gốc ↗</a>}</footer></div></dialog>}
 
 
   </main>;

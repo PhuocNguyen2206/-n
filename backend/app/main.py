@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -17,8 +18,10 @@ from . import config
 from .auth import StaffUser, active_user, ensure_default_admin
 from .auth import router as auth_router
 from .database import get_connection, initialize_database
+from .demo import GuestLimiter
 from .schemas import ExitReviewResolution, ManualGateEventRequest, RecognitionResult
 from .services.face import FaceService
+from .services.face_quality import UNCLEAR_REASON, clear_faces
 from .services.vision import VisionService
 from .services.vlm import VlmPlateReader
 
@@ -54,6 +57,7 @@ vision_service: VisionService | None = None
 vlm_status_reader = VlmPlateReader()  # dùng cho /model/status khi chưa nạp VisionService
 face_service: FaceService | None = None
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+guest_limiter = GuestLimiter(config.GUEST_DEMO_PER_MINUTE)
 
 
 def get_vision_service() -> VisionService:
@@ -72,6 +76,7 @@ def get_face_service() -> FaceService:
 
 # Quét tự động ở lối ra: trong khoảng này sau khi xe được cho ra, khung hình lặp của xe đó không ghi nhật ký.
 EXIT_REPEAT_WINDOW_SECONDS = 60
+CROWDED_REASON = "Có hai xe cùng trong khung: mời từng xe tiến vào"
 
 
 def now_iso() -> str:
@@ -187,6 +192,46 @@ async def analyze_face(image: UploadFile = File(...), _: StaffUser = Depends(act
         raise HTTPException(422, str(error)) from error
 
 
+@app.get("/api/v1/demo/status")
+def demo_status() -> dict[str, bool]:
+    return {"enabled": config.GUEST_DEMO}
+
+
+@app.post("/api/v1/demo/analyze")
+async def demo_analyze(image: UploadFile = File(...), lane: Literal["face", "plate"] | None = Form(None)) -> dict:
+    """Khách thử nhận diện một ảnh: không cần đăng nhập, không lưu, không đối chiếu danh tính.
+
+    ``lane`` cho biết ảnh đến từ camera nào để chỉ chạy đúng phần nhận diện đó; bỏ trống thì chạy cả hai.
+    """
+    if not config.GUEST_DEMO:
+        raise HTTPException(404, "Chế độ xem thử đang tắt")
+    image_data = await read_image_upload(image)
+    ensure_decodable(image_data)
+    with Image.open(BytesIO(image_data)) as header:
+        width, height = header.size
+    if width * height > config.GUEST_DEMO_MAX_PIXELS:
+        raise HTTPException(413, "Ảnh có kích thước quá lớn")
+    faces: list = []
+    analysis = None
+    with guest_limiter.slot():
+        try:
+            if lane != "plate":
+                faces = (await run_in_threadpool(get_face_service().detect, image_data))["faces"]
+            if lane != "face":
+                analysis = await run_in_threadpool(get_vision_service().analyze_image, image_data)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+    return {
+        "width": width,
+        "height": height,
+        "faces": faces,
+        "plate_boxes": [item.box for item in analysis.detections] if analysis and analysis.uses_plate_model else [],
+        "plate_text": analysis.plate_text if analysis else None,
+        "plate_confidence": analysis.plate_confidence if analysis else None,
+        "plate_source": analysis.plate_source if analysis else None,
+    }
+
+
 @app.post("/api/v1/gate/manual", response_model=RecognitionResult)
 def record_manual_gate_event(request: ManualGateEventRequest, user: StaffUser = Depends(active_user)) -> RecognitionResult:
     """Ghi nhận ngoại lệ khi cổng không áp dụng quét AI.
@@ -266,6 +311,51 @@ def resolve_exit_review(review_id: str, request: ExitReviewResolution, user: Sta
         return RecognitionResult(event_id=event_id, decision=decision, reason=reason, plate_number=review["plate_number"], evidence_url=evidence_url(review["evidence_path"]), captured_at=review["occurred_at"])
 
 
+@app.post("/api/v1/gate/entry/manual-approve", response_model=RecognitionResult)
+async def approve_entry_by_guard(
+    images: list[UploadFile] = File(...), expected_plate: str = Form(..., max_length=30), user: StaffUser = Depends(active_user),
+) -> RecognitionResult:
+    """Bảo vệ đồng ý cho xe vào khi khuôn mặt không nhận diện rõ (áo mưa, đồ che nắng kín người).
+
+    Biển số vẫn bắt buộc do hệ thống đọc từ chính ảnh gửi lên; bảo vệ không gõ tay.
+    ``expected_plate`` là biển đang hiện trên màn hình lúc bấm, chỉ dùng để chặn
+    trường hợp xe khác đã vào khung hình. Phiên xe được mở nhưng không lưu đặc trưng khuôn mặt, nên lúc ra xe này luôn
+    được chuyển cho bảo vệ đối chiếu ảnh. Ảnh lúc bấm nút và tài khoản được ghi lại.
+    """
+    if len(images) != 2:
+        raise HTTPException(422, "Cần hai ảnh theo thứ tự: khuôn mặt, biển số")
+    frames = []
+    for image in images:
+        image_data = await read_image_upload(image)
+        ensure_decodable(image_data)
+        frames.append(image_data)
+    try:
+        analysis = await run_in_threadpool(get_vision_service().analyze_image, frames[1])
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    if getattr(analysis, "crowded", False):
+        raise HTTPException(409, CROWDED_REASON)
+    plate_number = analysis.plate_text
+    if not plate_number:
+        raise HTTPException(422, "Chưa đọc được biển số. Đưa biển vào rõ trong khung rồi bấm lại.")
+    if plate_number != normalize_plate_input(expected_plate):
+        raise HTTPException(409, f"Biển số trong khung hiện là {plate_number}. Kiểm tra lại xe rồi bấm lại.")
+    event_id, captured_at = str(uuid4()), now_iso()
+    reason = f"[BẢO VỆ XÁC NHẬN] Cho xe vào khi khuôn mặt không nhận diện rõ · Người xử lý: {user.full_name} ({user.username})"
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM gate_sessions WHERE plate_number = ? AND status = 'open'", (plate_number,)).fetchone():
+            raise HTTPException(409, "Xe này đã có lượt vào đang mở")
+        evidence_path = save_evidence(event_id, "entry", frames)
+        connection.execute(
+            "INSERT INTO access_events (id, occurred_at, direction, plate_number, decision, reason, plate_confidence, evidence_path, plate_source, operator_username) VALUES (?, ?, 'entry', ?, 'manual_approved', ?, ?, ?, ?, ?)",
+            (event_id, captured_at, plate_number, reason, analysis.plate_confidence, evidence_path, analysis.plate_source, user.username),
+        )
+        connection.execute("INSERT INTO gate_sessions (id, plate_number, entry_event_id, entered_at, entry_evidence_path) VALUES (?, ?, ?, ?, ?)", (str(uuid4()), plate_number, event_id, captured_at, evidence_path))
+    return RecognitionResult(event_id=event_id, decision="manual_approved", reason=reason, plate_number=plate_number, plate_source=analysis.plate_source,
+                             evidence_url=evidence_url(evidence_path), captured_at=captured_at)
+
+
 def entry_face_score(connection, session, faces) -> float:
     """Độ giống lớn nhất giữa mọi mặt lúc ra và mọi mặt đã lưu lúc vào của phiên."""
     face_service_instance = get_face_service()
@@ -276,7 +366,7 @@ def entry_face_score(connection, session, faces) -> float:
 @app.post("/api/v1/gate/verify", response_model=RecognitionResult)
 async def verify_gate_image(
     images: list[UploadFile] = File(...), direction: str = Form("exit"), automatic: bool = Form(False),
-    paired_cameras: bool = Form(False), user: StaffUser = Depends(active_user),
+    paired_cameras: bool = Form(False), previous_plate: str | None = Form(None, max_length=30), user: StaffUser = Depends(active_user),
 ) -> RecognitionResult:
     if direction not in {"entry", "exit"}:
         raise HTTPException(422, "Hướng di chuyển không hợp lệ")
@@ -290,10 +380,13 @@ async def verify_gate_image(
         # Decode every input before analysing or saving, including a dedicated face frame.
         ensure_decodable(image_data)
         frames.append(image_data)
+    face_frames: list[tuple[bytes, list]] = []
+    crowded = False
     for index, image_data in enumerate(frames):
         if not paired_cameras or index == 1:
             try:
                 analysis = await run_in_threadpool(get_vision_service().analyze_image, image_data)
+                crowded = crowded or getattr(analysis, "crowded", False)
                 if not plate and analysis.plate_text:
                     plate, plate_confidence = analysis.plate_text, analysis.plate_confidence  # None khi VLM đọc: VLM không trả độ tin cậy
                     plate_source = analysis.plate_source
@@ -301,9 +394,22 @@ async def verify_gate_image(
                 pass
         if not paired_cameras or index == 0:
             try:
-                faces.extend(await run_in_threadpool(get_face_service().extract_all, image_data))
+                face_frames.append((image_data, await run_in_threadpool(get_face_service().extract_all, image_data)))
             except ValueError:
                 pass
+    if crowded:
+        return RecognitionResult(event_id="live-preview", decision="manual_review", reason=CROWDED_REASON, stage="crowded")
+    # Quét tự động gửi kèm biển đọc ở khung trước: phải đọc ra cùng một biển hai lần liền mới quyết định.
+    if automatic and previous_plate is not None and plate and normalize_plate_input(previous_plate) != plate:
+        return RecognitionResult(event_id="live-preview", decision="manual_review", reason="Đang xác nhận biển số, giữ xe đứng yên",
+                                 plate_number=plate, stage="confirm_plate")
+    # Có biển số mới có thể cho xe qua, nên chỉ khi đó mới tốn công kiểm tra mặt có bị che không.
+    face_unclear = False
+    for image_data, found in face_frames:
+        usable = await run_in_threadpool(clear_faces, image_data, found, getattr(get_vision_service(), "vlm", None)) if plate else found
+        faces.extend(usable)
+        face_unclear = face_unclear or not usable
+    face_unclear = face_unclear and not faces
     face_confidence = max((face.confidence for face in faces), default=None)
     event_id = str(uuid4())
     decision, reason, score = "denied", "Không đọc được biển số xe", None
@@ -316,17 +422,21 @@ async def verify_gate_image(
         # Camera tự động gửi nhiều khung hình. Khi khung chưa đủ dữ liệu, chỉ
         # báo trạng thái chờ thay vì ghi hàng loạt lỗi vào nhật ký bảo vệ.
         if direction == "exit" and plate and not faces:
-            review = prepare_exit_review(connection, plate, "Không xác minh được khuôn mặt; cần bảo vệ kiểm tra trực tiếp", frames, None, user.username)
+            problem = "Khuôn mặt bị che hoặc chưa rõ" if face_unclear else "Không xác minh được khuôn mặt"
+            review = prepare_exit_review(connection, plate, f"{problem}; cần bảo vệ kiểm tra trực tiếp", frames, None, user.username)
             if review:
                 return review
         if automatic and (not plate or not faces):
-            waiting_reason = "Đang chờ biển số xe rõ" if not plate else "Đang chờ khuôn mặt rõ"
+            waiting_decision = "manual_review"
+            waiting_reason = "Đang chờ biển số xe rõ" if not plate else UNCLEAR_REASON if face_unclear else "Đang chờ khuôn mặt rõ"
+            if direction == "entry" and plate and connection.execute("SELECT 1 FROM gate_sessions WHERE plate_number = ? AND status = 'open'", (plate,)).fetchone():
+                waiting_decision, waiting_reason = "approved", "Xe này đã được ghi nhận vào; chờ xe đi qua"
             return RecognitionResult(
-                event_id="live-preview", decision="manual_review", reason=waiting_reason,
+                event_id="live-preview", decision=waiting_decision, reason=waiting_reason,
                 plate_number=plate, face_detected=bool(faces), face_detection_confidence=face_confidence,
             )
         if not faces:
-            reason = "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn" if plate else "Không đọc được biển số xe và không thấy khuôn mặt rõ"
+            reason = UNCLEAR_REASON if face_unclear else "Không phát hiện được khuôn mặt rõ trong các ảnh đã chọn" if plate else "Không đọc được biển số xe và không thấy khuôn mặt rõ"
         elif plate and direction == "entry":
             existing = connection.execute("SELECT id, entry_event_id FROM gate_sessions WHERE plate_number = ? AND status = 'open' ORDER BY entered_at DESC LIMIT 1", (plate,)).fetchone()
             if existing:
@@ -354,8 +464,10 @@ async def verify_gate_image(
                 score = entry_face_score(connection, session, faces)
                 if score >= config.FACE_MATCH_THRESHOLD:
                     decision, reason = "approved", "Khuôn mặt khớp với người đã vào cùng xe"
-                else:
+                elif connection.execute("SELECT 1 FROM gate_session_faces WHERE session_id = ?", (session["id"],)).fetchone():
                     reason = "Khuôn mặt hiện tại không khớp lượt xe lúc vào"
+                else:
+                    score, reason = None, "Lượt vào do bảo vệ duyệt, không có khuôn mặt để đối chiếu; cần bảo vệ kiểm tra"
         if direction == "exit" and plate and decision == "denied":
             review = prepare_exit_review(connection, plate, reason, frames, score, user.username)
             if review:

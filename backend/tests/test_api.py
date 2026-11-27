@@ -19,7 +19,9 @@ from PIL import Image
 
 from app import config, database
 from app import main as main_module
+from app.demo import GuestLimiter
 from app.services.face import FaceService
+from app.services.face_quality import clear_faces
 
 # ---------- AI giả lập ----------
 
@@ -46,7 +48,8 @@ def label_of(image_data: bytes) -> str:
 @dataclass
 class FakeFace:
     embedding: list[float]
-    confidence: float = 0.99
+    confidence: float = 0.999
+    box: tuple = ()
 
 
 class FakeFaceService:
@@ -70,6 +73,9 @@ class FakeAnalysis:
     plate_text: str | None
     plate_confidence: float | None = 0.9
     plate_source: str | None = "ocr"
+    detections: tuple = ()
+    uses_plate_model: bool = True
+    crowded: bool = False
 
 
 class FakeVlm:
@@ -376,3 +382,187 @@ def test_automatic_exit_repeat_after_release_is_not_logged(client):
     assert scan(client, "an", "59F113860", "exit")["decision"] == "denied"
     assert scan(client, "an", "43A12345", "exit", automatic=True)["decision"] == "denied"
     assert len(events(client)) == count + 2
+
+
+# ---------- Xem thử cho khách ----------
+
+def demo(client, name, size=(64, 48)):
+    return client.post("/api/v1/demo/analyze", files={"image": ("a.jpg", image(name, size), "image/jpeg")})
+
+
+def test_guest_demo_is_off_by_default(env, monkeypatch):
+    monkeypatch.setattr(config, "GUEST_DEMO", False)
+    with TestClient(main_module.app) as anonymous:
+        assert anonymous.get("/api/v1/demo/status").json() == {"enabled": False}
+        assert demo(anonymous, "59F113860").status_code == 404
+
+
+def test_guest_demo_reads_without_login_and_stores_nothing(env, monkeypatch):
+    monkeypatch.setattr(config, "GUEST_DEMO", True)
+    monkeypatch.setattr(main_module, "guest_limiter", GuestLimiter(30))
+    with TestClient(main_module.app) as anonymous:
+        plate = demo(anonymous, "59F113860")
+        assert plate.status_code == 200 and plate.json()["plate_text"] == "59F113860" and plate.json()["faces"] == []
+        assert len(demo(anonymous, "an").json()["faces"]) == 1
+        assert not anonymous.cookies
+        # Khách vẫn không vào được chức năng nào của trạm bảo vệ.
+        assert anonymous.get("/api/v1/events").status_code == 401
+        assert anonymous.post("/api/v1/vision/analyze").status_code == 401
+    with database.get_connection() as connection:
+        for table in ("access_events", "gate_sessions", "vehicles", "people", "training_samples", "auth_sessions"):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+    assert not list((env / "evidence").glob("*")) and not list((env / "training").glob("*"))
+
+
+def test_guest_demo_limits(env, monkeypatch):
+    monkeypatch.setattr(config, "GUEST_DEMO", True)
+    clock = [0.0]
+    limiter = GuestLimiter(2, clock=lambda: clock[0])
+    monkeypatch.setattr(main_module, "guest_limiter", limiter)
+    with TestClient(main_module.app) as anonymous:
+        assert [demo(anonymous, "an").status_code for _ in range(3)] == [200, 200, 429]
+        clock[0] = 61
+        with limiter.slot():
+            assert demo(anonymous, "an").status_code == 429
+        assert demo(anonymous, "an").status_code == 200
+        monkeypatch.setattr(config, "GUEST_DEMO_MAX_PIXELS", 1000)
+        assert demo(anonymous, "an").status_code == 413
+        bad = anonymous.post("/api/v1/demo/analyze", files={"image": ("a.jpg", b"khong phai anh", "image/jpeg")})
+        assert bad.status_code == 422
+
+
+def test_guest_demo_lane_runs_only_its_part(env, monkeypatch):
+    monkeypatch.setattr(config, "GUEST_DEMO", True)
+    monkeypatch.setattr(main_module, "guest_limiter", GuestLimiter(30))
+
+    def post(client, name, lane):
+        return client.post("/api/v1/demo/analyze", files={"image": ("a.jpg", image(name), "image/jpeg")}, data={"lane": lane})
+
+    with TestClient(main_module.app) as anonymous:
+        monkeypatch.setattr(FakeVisionService, "analyze_image", lambda self, data: pytest.fail("ô khuôn mặt không được đọc biển số"))
+        face = post(anonymous, "an", "face").json()
+        assert len(face["faces"]) == 1 and face["plate_text"] is None and (face["width"], face["height"]) == (64, 48)
+        monkeypatch.setattr(FakeVisionService, "analyze_image", lambda self, data: FakeAnalysis(label_of(data)))
+        monkeypatch.setattr(FakeFaceService, "detect", lambda self, data: pytest.fail("ô biển số không được dò khuôn mặt"))
+        plate = post(anonymous, "59F113860", "plate").json()
+        assert plate["plate_text"] == "59F113860" and plate["faces"] == []
+        assert post(anonymous, "an", "khac").status_code == 422
+
+
+# ---------- Khuôn mặt phải rõ mới cho qua ----------
+
+def covered_faces(monkeypatch, confidence=0.983, answer=None):
+    """Máy dò vẫn thấy mặt nhưng độ tin cậy thấp, hoặc VLM nói mặt bị che."""
+    monkeypatch.setattr(FakeFaceService, "extract_all",
+                        lambda self, data: [FakeFace(IDENTITY["an"], confidence, (0, 0, 40, 40))])
+    monkeypatch.setattr(FakeVlm, "check_face", staticmethod(lambda face: answer), raising=False)
+
+
+@pytest.mark.parametrize("confidence,answer", [(0.983, True), (0.999, False)])
+def test_covered_face_is_not_let_in(client, monkeypatch, confidence, answer):
+    covered_faces(monkeypatch, confidence, answer)
+    waiting = scan(client, "an", "59F113860", "entry", automatic=True)
+    assert waiting["event_id"] == "live-preview" and waiting["decision"] != "approved" and "chưa rõ" in waiting["reason"]
+    assert events(client) == []
+    manual = scan(client, "an", "59F113860", "entry")
+    assert manual["decision"] == "denied" and "chưa rõ" in manual["reason"]
+    assert client.get("/api/v1/sessions/recent").json() == []
+
+
+def test_covered_face_at_exit_goes_to_guard(client, monkeypatch):
+    assert scan(client, "an", "59F113860", "entry")["decision"] == "approved"
+    covered_faces(monkeypatch, 0.999, False)
+    review = scan(client, "an", "59F113860", "exit", automatic=True)
+    assert review["decision"] == "manual_review" and "bị che" in review["reason"]
+
+
+@pytest.mark.parametrize("answer", [True, None])
+def test_clear_face_passes_even_when_vlm_unavailable(client, monkeypatch, answer):
+    covered_faces(monkeypatch, 0.999, answer)
+    assert scan(client, "an", "59F113860", "entry")["decision"] == "approved"
+
+
+def test_bystander_does_not_pass_for_covered_driver(monkeypatch):
+    monkeypatch.setattr(config, "FACE_VLM_CHECK", False)
+    driver = FakeFace(IDENTITY["an"], 0.97, (0, 0, 40, 40))
+    bystander = FakeFace(IDENTITY["binh"], 0.9999, (50, 0, 60, 10))
+    assert clear_faces(image("an"), [driver, bystander]) == []
+    driver.confidence = 0.999
+    # Người đứng xa phía sau (mặt nhỏ hơn hẳn) không được tính vào xe này.
+    assert clear_faces(image("an"), [driver, bystander]) == [driver]
+
+
+# ---------- Bảo vệ cho xe vào ----------
+
+def guard_entry(client, expected, plate="59F113860"):
+    files = [("images", ("face.jpg", image("noface"), "image/jpeg")), ("images", ("plate.jpg", image(plate), "image/jpeg"))]
+    return client.post("/api/v1/gate/entry/manual-approve", files=files, data={"expected_plate": expected})
+
+
+def test_guard_can_let_unclear_face_in_and_exit_still_needs_guard(client):
+    result = guard_entry(client, "59F113860")
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert (body["decision"], body["plate_number"]) == ("manual_approved", "59F113860") and body["evidence_url"].endswith("_entry.jpg")
+    logged = events(client)[0]
+    assert logged["direction"] == "entry" and logged["operator_username"] == "admin" and "BẢO VỆ XÁC NHẬN" in logged["reason"]
+    assert client.get("/api/v1/dashboard/summary").json()["open_sessions"] == 1
+    assert guard_entry(client, "59F113860").status_code == 409
+    # Khung quét tự động tiếp theo của xe đó không đòi duyệt lại.
+    repeat = scan(client, "noface", "59F113860", "entry", automatic=True)
+    assert repeat["decision"] == "approved" and "đã được ghi nhận" in repeat["reason"]
+    # Lúc ra: dù mặt rõ vẫn không có gì để so, bảo vệ quyết định.
+    review = scan(client, "an", "59F113860", "exit")
+    assert review["decision"] == "manual_review" and "bảo vệ duyệt" in review["reason"] and review["face_similarity"] is None
+    resolved = client.post(f"/api/v1/gate/exit-reviews/{review['review_id']}/resolve", json={"action": "approve"})
+    assert resolved.json()["decision"] == "manual_approved"
+    assert client.get("/api/v1/dashboard/summary").json()["open_sessions"] == 0
+
+
+def test_guard_entry_plate_must_be_read_by_the_system(client):
+    # Không đọc được biển thì không cho vào, dù phía gửi tự điền một biển.
+    assert guard_entry(client, "59F113860", plate="noplate").status_code == 422
+    # Xe khác đã vào khung hình: không duyệt.
+    assert guard_entry(client, "59F113860", plate="43A12345").status_code == 409
+    assert events(client) == [] and client.get("/api/v1/sessions/recent").json() == []
+    client.post("/api/v1/auth/logout")
+    assert guard_entry(client, "59F113860").status_code == 401
+
+
+# ---------- Hai xe đi sát nhau ----------
+
+def auto_scan(client, face, plate, direction, previous):
+    files = [("images", ("face.jpg", image(face), "image/jpeg")), ("images", ("plate.jpg", image(plate), "image/jpeg"))]
+    data = {"direction": direction, "paired_cameras": "true", "automatic": "true", "previous_plate": previous}
+    return client.post("/api/v1/gate/verify", files=files, data=data).json()
+
+
+def test_plate_must_be_read_twice_in_a_row(client):
+    for previous in ("", "43A12345"):
+        first = auto_scan(client, "an", "59F113860", "entry", previous)
+        assert (first["stage"], first["plate_number"], first["event_id"]) == ("confirm_plate", "59F113860", "live-preview")
+    assert events(client) == []
+    assert auto_scan(client, "an", "59F113860", "entry", "59F113860")["decision"] == "approved"
+    # Lối ra cũng vậy, kể cả trước khi tạo yêu cầu cho bảo vệ.
+    assert auto_scan(client, "noface", "59F113860", "exit", "")["stage"] == "confirm_plate"
+    assert client.get("/api/v1/gate/exit-reviews/pending").json() == []
+
+
+def test_two_vehicles_side_by_side_get_no_decision(client, monkeypatch):
+    monkeypatch.setattr(FakeVisionService, "analyze_image", lambda self, data: FakeAnalysis(label_of(data), crowded=True))
+    held = scan(client, "an", "59F113860", "entry", automatic=True)
+    assert held["stage"] == "crowded" and "hai xe" in held["reason"]
+    assert scan(client, "an", "59F113860", "entry")["stage"] == "crowded"
+    assert guard_entry(client, "59F113860").status_code == 409
+    assert events(client) == []
+
+
+def test_face_from_vehicle_behind_is_not_saved_with_front_vehicle(client, monkeypatch):
+    front = FakeFace(IDENTITY["an"], 0.9999, (0, 0, 100, 120))
+    behind = FakeFace(IDENTITY["binh"], 0.9999, (150, 0, 190, 50))
+    passenger = FakeFace(IDENTITY["chi"], 0.9999, (100, 0, 175, 90))
+    monkeypatch.setattr(config, "FACE_VLM_CHECK", False)
+    monkeypatch.setattr(FakeFaceService, "extract_all", lambda self, data: [front, behind, passenger])
+    assert scan(client, "an", "59F113860", "entry")["decision"] == "approved"
+    monkeypatch.setattr(FakeFaceService, "extract_all", lambda self, data: [FakeFace(IDENTITY["binh"], 0.9999, (0, 0, 100, 120))])
+    assert scan(client, "binh", "59F113860", "exit")["decision"] == "manual_review"

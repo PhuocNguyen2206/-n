@@ -3,6 +3,7 @@
 export const API: string = import.meta.env.VITE_API_URL || "/api/v1";
 export const BACKEND = API.startsWith("http") ? new URL(API).origin : "";
 export const UNAUTHORIZED_EVENT = "gate-unauthorized";
+export const formatPlate = (plate: string) => plate.replace(/^(\d{2}[A-Z][A-Z0-9]?)(\d{3})(\d{2})$/, "$1-$2.$3").replace(/^(\d{2}[A-Z][A-Z0-9]?)(\d{4})$/, "$1-$2");
 
 /** fetch kèm cookie phiên; hết phiên (401) thì báo cho màn hình đăng nhập. */
 export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {

@@ -39,6 +39,8 @@ class RecognitionResult(BaseModel):
     face_detection_confidence: float | None = None
     face_similarity: float | None = None
     plate_source: Literal["ocr", "vlm"] | None = None
+    # Khung hình bị tạm giữ, chưa ra quyết định: đang xác nhận biển số hoặc có hai xe ngang nhau.
+    stage: Literal["confirm_plate", "crowded"] | None = None
 
 
 class ManualGateEventRequest(BaseModel):

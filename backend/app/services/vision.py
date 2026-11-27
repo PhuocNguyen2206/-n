@@ -46,6 +46,27 @@ class AnalysisResult:
     vlm_text: str | None = None
     vlm_ms: float | None = None
     ocr_min_confidence: float | None = None
+    crowded: bool = False  # hai biển số to gần bằng nhau trong cùng khung
+
+
+def _area(box: list[int]) -> int:
+    return max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+
+
+def _overlaps(first: list[int], second: list[int]) -> bool:
+    """Hai khung chồng lên nhau đáng kể: cùng một biển bị dò hai lần."""
+    shared = _area([max(first[0], second[0]), max(first[1], second[1]), min(first[2], second[2]), min(first[3], second[3])])
+    return shared > 0.3 * min(_area(first), _area(second))
+
+
+def plates_by_distance(detections: list[ObjectDetection]) -> list[ObjectDetection]:
+    """Các biển số khác nhau, xếp từ gần cổng nhất (to nhất). Bỏ qua khung dò yếu nếu đã có khung chắc hơn."""
+    sure = [item for item in detections if item.confidence >= 0.5] or detections
+    plates: list[ObjectDetection] = []
+    for item in sorted(sure, key=lambda item: _area(item.box), reverse=True):
+        if not any(_overlaps(item.box, kept.box) for kept in plates):
+            plates.append(item)
+    return plates
 
 
 class VisionService:
@@ -147,7 +168,9 @@ class VisionService:
             )
             for box in prediction.boxes
         ]
-        plate_text, plate_confidence, min_confidence = self._read_plate(image, detections)
+        # Với model biển số: chỉ đọc biển của xe gần nhất, không "đọc hộ" biển xe phía sau.
+        readable = plates_by_distance(detections)[:1] if self.uses_plate_model else detections
+        plate_text, plate_confidence, min_confidence = self._read_plate(image, readable)
         return detections, plate_text, plate_confidence, min_confidence
 
     def analyze_image(self, image_data: bytes) -> AnalysisResult:
@@ -162,13 +185,20 @@ class VisionService:
         result = AnalysisResult(model_name, self.uses_plate_model, detections, plate_text, plate_confidence,
                                 plate_source="ocr" if plate_text else None, ocr_text=plate_text,
                                 ocr_min_confidence=min_confidence)
+        plates = plates_by_distance(detections) if self.uses_plate_model else []
+        result.crowded = len(plates) > 1 and _area(plates[1].box) >= config.CROWDED_PLATE_RATIO * _area(plates[0].box)
         # Tầng dự phòng VLM: đã thấy biển số mà OCR đọc rỗng, sai định dạng, hoặc
         # đúng định dạng nhưng có ký tự không chắc chắn. Đo trên tập test: ngưỡng
         # 0,5 bắt được 2/3 lỗi OCR "đúng định dạng nhưng sai ký tự", chỉ thêm 1 lượt
         # gọi VLM trên 49 biển OCR đọc đúng.
         unsure = min_confidence is not None and min_confidence < config.OCR_MIN_CHAR_CONFIDENCE
         if detections and (not is_valid_vn_plate(plate_text) or unsure):
-            reading = self.vlm.read_plate(image)
+            target = image
+            if len(plates) > 1:  # nhiều xe trong khung: chỉ đưa vùng quanh biển gần nhất cho VLM
+                left, top, right, bottom = plates[0].box
+                width, height = right - left, bottom - top
+                target = self._crop(image, [left - width, top - height, right + width, bottom + height])
+            reading = self.vlm.read_plate(target)
             if reading is not None:
                 result.vlm_text, result.vlm_ms = reading.raw_text, reading.elapsed_ms
                 if reading.plate:
