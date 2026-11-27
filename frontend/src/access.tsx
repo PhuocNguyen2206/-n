@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { API, apiFetch, errorMessage } from "./api";
+import { PasswordInput } from "./password-input";
 import { AuthShell } from "./auth-shell";
 
 export type StaffUser = { username: string; full_name: string; role: "admin" | "guard"; must_change_password: boolean };
@@ -30,7 +31,7 @@ export function LoginScreen({ onLogin, onGuest }: { onLogin: (user: StaffUser) =
     <h1>Hệ thống quét camera</h1>
     <h2>Đăng nhập hệ thống</h2>
     <input aria-label="Tên đăng nhập" placeholder="Nhập tên đăng nhập" autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required maxLength={60} autoFocus />
-    <input aria-label="Mật khẩu" placeholder="Nhập mật khẩu" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required maxLength={200} />
+    <PasswordInput aria-label="Mật khẩu" placeholder="Nhập mật khẩu" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required maxLength={200} />
     {message && <p className="form-message error" role="alert">{message}</p>}
     <button type="submit" className="auth-submit" disabled={busy || !username.trim() || !password}>{busy ? "Đang đăng nhập…" : "Đăng nhập"}</button>
     {canRegister && <button type="button" className="auth-teal auth-small" title="Gửi đăng ký, chờ quản trị viên duyệt" onClick={() => setRegistering(true)}>Đăng ký tài khoản</button>}
@@ -68,8 +69,8 @@ function RegisterScreen({ onBack }: { onBack: (registeredName?: string) => void 
     <p>Quản trị viên duyệt xong thì tài khoản mới dùng được.</p>
     <input aria-label="Họ tên" placeholder="Họ tên" autoComplete="name" value={fullName} onChange={e => setFullName(e.target.value)} required minLength={2} maxLength={120} autoFocus />
     <input aria-label="Tên đăng nhập (chữ không dấu, số, . _ -)" placeholder="Tên đăng nhập (chữ không dấu, số)" autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required pattern="[a-zA-Z0-9_.\-]{3,60}" title="3–60 ký tự: chữ không dấu, số, . _ -" maxLength={60} />
-    <input aria-label="Mật khẩu (ít nhất 8 ký tự)" placeholder="Mật khẩu (ít nhất 8 ký tự)" type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} maxLength={200} />
-    <input aria-label="Nhập lại mật khẩu" placeholder="Nhập lại mật khẩu" type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={8} maxLength={200} />
+    <PasswordInput aria-label="Mật khẩu (ít nhất 8 ký tự)" placeholder="Mật khẩu (ít nhất 8 ký tự)" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} maxLength={200} />
+    <PasswordInput aria-label="Nhập lại mật khẩu" placeholder="Nhập lại mật khẩu" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={8} maxLength={200} />
     {message && <p className="form-message error" role="alert">{message}</p>}
     <button type="submit" className="auth-submit" disabled={busy}>{busy ? "Đang gửi…" : "Gửi đăng ký"}</button>
     <button type="button" className="secondary" onClick={() => onBack()}>Quay lại đăng nhập</button>
@@ -96,9 +97,9 @@ export function ChangePasswordForm({ onDone }: { onDone: (user: StaffUser) => vo
     finally { setBusy(false); }
   };
   return <form className="stack-form" onSubmit={submit}>
-    <label>Mật khẩu hiện tại<input type="password" autoComplete="current-password" value={current} onChange={e => setCurrent(e.target.value)} required /></label>
-    <label>Mật khẩu mới <small>(ít nhất 8 ký tự)</small><input type="password" autoComplete="new-password" value={next} onChange={e => setNext(e.target.value)} minLength={8} required /></label>
-    <label>Nhập lại mật khẩu mới<input type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} minLength={8} required /></label>
+    <label>Mật khẩu hiện tại<PasswordInput autoComplete="current-password" value={current} onChange={e => setCurrent(e.target.value)} required /></label>
+    <label>Mật khẩu mới <small>(ít nhất 8 ký tự)</small><PasswordInput autoComplete="new-password" value={next} onChange={e => setNext(e.target.value)} minLength={8} required /></label>
+    <label>Nhập lại mật khẩu mới<PasswordInput autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} minLength={8} required /></label>
     {message && <p className={`form-message ${message.ok ? "success" : "error"}`} role="status">{message.text}</p>}
     <button type="submit" disabled={busy}>{busy ? "Đang lưu…" : "Đổi mật khẩu"}</button>
   </form>;
@@ -159,7 +160,7 @@ export function AccountsPanel({ user, requests, onRequestsChanged }: { user: Sta
         <h3>Thêm tài khoản</h3>
         <div className="two-columns"><label>Tên đăng nhập<input value={username} onChange={e => setUsername(e.target.value)} pattern="[a-zA-Z0-9_.\-]{3,60}" required /></label>
           <label>Họ tên<input value={fullName} onChange={e => setFullName(e.target.value)} minLength={2} maxLength={120} required /></label></div>
-        <div className="two-columns"><label>Mật khẩu tạm<input type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} minLength={8} required /></label>
+        <div className="two-columns"><label>Mật khẩu tạm<PasswordInput autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} minLength={8} required /></label>
           <label>Vai trò<select value={role} onChange={e => setRole(e.target.value as "guard" | "admin")}><option value="guard">Bảo vệ</option><option value="admin">Quản trị viên</option></select></label></div>
         {message && <p className={`form-message ${message.ok ? "success" : "error"}`} role="status">{message.text}</p>}
         <button type="submit">Tạo tài khoản</button>

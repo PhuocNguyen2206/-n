@@ -33,3 +33,12 @@ main>.accounts-panel{display:none}
 .access-column{display:flex;flex-direction:column;gap:20px;min-width:0}
 .access-card.has-pending{border-color:#d9b44a;background:#fffbee}
 .view-event-operator{display:block;font-weight:600}
+/* Ô mật khẩu có nút con mắt. Bộ chọn đủ mạnh để không bị kiểu nút chung của form ghi đè. */
+.password-field{display:block;position:relative;margin-top:6px}
+.password-field input{margin:0;padding-right:46px}
+.auth-form .password-field{margin-top:0}
+.auth-form label .password-field{margin-top:4px}
+.password-field input::-ms-reveal{display:none}
+span.password-field>button.password-eye{position:absolute;top:0;bottom:0;right:0;width:44px;height:auto;align-self:stretch;margin:0;padding:0;display:grid;place-items:center;border:0;border-radius:0 4px 4px 0;background:transparent;color:#6b7a83}
+span.password-field>button.password-eye:hover{background:transparent;color:#1d262d}
+span.password-field>button.password-eye[aria-pressed="true"]{color:#005ab7}
